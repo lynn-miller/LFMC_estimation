@@ -4,16 +4,13 @@ This code reproduces the results in the paper "Multi-modal Temporal CNNs for Liv
 ## Data
 Seven data sources are used:
 <a name="Globe-LFMC">
-1. The `Globe-LFMC.xlsx` datatset - https://springernature.figshare.com/collections/Globe-LFMC_a_global_plant_water_status_database_for_vegetation_ecophysiology_and_wildfire_applications/4526810/2
-</a>
+1. The `Globe-LFMC.xlsx` datatset - https://springernature.figshare.com/collections/Globe-LFMC_a_global_plant_water_status_database_for_vegetation_ecophysiology_and_wildfire_applications/4526810/2</a>
 2. The NASA SRTM Digital Elevation 30m data. Google Earth Engine product: USGS/SRTMGL1_003 - https://developers.google.com/earth-engine/datasets/catalog/USGS_SRTMGL1_003
 3. MODIS MCD43A4.006 Nadir BRDF-Adjusted Reflectance Daily 500m data. Google Earth Engine product: MODIS/006/MCD43A4 - https://developers.google.com/earth-engine/datasets/catalog/MODIS_006_MCD43A4
 4. MODIS MOD10A1.006 Terra Snow Cover Daily Global 500m data. Google Earth Engine product: MODIS/006/MOD10A1 - https://developers.google.com/earth-engine/datasets/catalog/MODIS_006_MOD10A1
 5. MODIS MOD44W.006 MODIS water mask. Google Earth Engine product: MODIS/006/MOD44W - https://developers.google.com/earth-engine/datasets/catalog/MODIS_006_MOD44W
 6. PRISM AN81d Gridded daily climate dataset. Google Earth Engine product: OREGONSTATE/PRISM/AN81d - https://developers.google.com/earth-engine/datasets/catalog/OREGONSTATE_PRISM_AN81d
-<a name="Koppen-Geiger">
-7. Present-day (1980–2016) Köppen-Geiger climate classification dataset - https://figshare.com/articles/dataset/Present_and_future_K_ppen-Geiger_climate_classification_maps_at_1-km_resolution/6396959/2
-</a>
+7. <a name="Koppen-Geiger">Present-day (1980–2016) Köppen-Geiger climate classification dataset - https://figshare.com/articles/dataset/Present_and_future_K_ppen-Geiger_climate_classification_maps_at_1-km_resolution/6396959/2</a>
 
 ## Requirements
 1. Python 3.8 with packages listed in [requirements.txt](../requirements.txt). The code was written and tested using Anaconda on Windows. Limited testing has also been done on Linux, but there were minor differences in the versions of some packages (see [requirements-linux.txt](../requirements-linux.txt) for package versions used). [InstallNotes.md](../InstallNotes.md) contains some notes about how to set up a suitable Anaconda virtual environment.
@@ -22,7 +19,7 @@ Seven data sources are used:
 4. A copy of the [Köppen-Geiger Climate Zone Data](#Koppen-Geiger)
 
 ## Code
-The iPython notebooks and Python scripts in can be used to extract data from Google Earth Engine and run the scenarios from the paper. Steps are:
+The iPython notebooks and Python scripts in can be used to extract data from Google Earth Engine and run the scenarios from the paper.
 
 ### Set Up
 The `common.py` file sets up global variables and parameters used by the notebooks and scripts.
@@ -48,49 +45,34 @@ Run the three notebooks in the `extract_data` directory in the following order:
 3. `Extract PRISM Data.ipynb`
 
 ### Build Models
-There is a notebook or script in the `build_models` directory to build the models used in each of the experiments in the paper. Most of the results are from the models created by:
-<a name="main">
+There is a notebook or script in the `build_models` directory to build the models used in each of the experiments in the paper. Most of the results are from the <a name="main">main models</a> created by:
 - `out-of-site_models.py`
 - `within-site_models.py`
-<\a>
 
-The models for the LFMC maps are created by:
-<a name="maps">
+The models for the <a name="maps">LFMC maps</a> are created by:
 - `map2017_modis_tempCNN.ipynb`
 - `map2017_out-of-site_model.ipynb`
-<\a>
 
-For the models for the comparison tests (section 3.1.4 in the paper) run <a name="comp">
-`comparison models.ipynb`<\a>.
+For the models for the comparison tests (section 3.1.4 in the paper) run <a name="comp">`comparison models.ipynb`</a>.
 
-For the input ablation tests (section 3.3.1 in the paper) run:
-<a name="input">
+For the <a name="input">input ablation tests</a> (section 3.3.1 in the paper) run:
 - `out-of-site_omit_one.py`
 - `within-site_omit_one.py`
-<\a>
 
-For the architecture alation tests (section 3.3.2 in the paper) run:
-<a name="ablation">
+For the architecture <a name="ablation">ablation tests</a> (section 3.3.2 in the paper) run:
 - `out-of-site_ablation.py`
 - `within-site_ablation.py`
-<\a>
 
-The remaining two notebooks (`out-of-site run times.ipynb` and `within-site run times.ipynb``) were used to determine the run times reported in sections 3.1.5 and 3.3.2 of the paper.
+The remaining two notebooks (`out-of-site run times.ipynb` and `within-site run times.ipynb`) were used to determine the run times reported in sections 3.1.5 and 3.3.2 of the paper.
 
 The three architecture files define the two architectures presented in the paper, plus the Modis-tempCNN baseline architecture.
 
 ### Analyse Results
 #### Ensemble Creation
 There are a set of notebooks to generate the ensembles from the model pools:
-<a name="ens-main">
-- `Generate main ensembles.ipynb` creates ensembles from the [main models](#main).
-<\a>
-<a name="ens-comp">
-- `Generate comparison ensembles.ipynb` creates ensembles from the [comparison models](#comp).
-<\a>
-<a name="ens-change">
-- `Generate changes ensembles.ipynb` creates ensembles from the [input ablation models](#input) and [architecture ablation models](#ablation).
-<\a>
+- <a name="ens-main">`Generate main ensembles.ipynb` creates ensembles from the [main models](#main).</a>
+- <a name="ens-comp">`Generate comparison ensembles.ipynb` creates ensembles from the [comparison models](#comp).</a>
+- <a name="ens-change">`Generate changes ensembles.ipynb` creates ensembles from the [input ablation models](#input) and [architecture ablation models](#ablation).</a>
 #### Generate Results and Figures
 The notebooks to calculate the evalation metrics and generate the figures are:
 | Notebook | Relevant section in paper | Pre-requisites |
@@ -103,7 +85,7 @@ The notebooks to calculate the evalation metrics and generate the figures are:
 | `LFMC range evaluation.ipynb` | 3.4.3 | [Main ensembles](#ens-main) |
 | `Climate zone analysis.ipynb` | 3.5.1 | [Main ensembles](#ens-main) |
 | `Locations analysis.ipynb` | 3.5.2 | [Main ensembles](#ens-main) |
-| `Compare maps.ipynb` | 3.5.3 | [Mapping models](#maps), plus a TIFF that is the difference between the out-of-site TIFF and the Modis-tempCNN TIFF (code not provided) |
+| `Compare maps.ipynb` | 3.5.3 | [Mapping models](#maps), <br>plus a TIFF that is the difference between the out-of-site TIFF <br>and the Modis-tempCNN TIFF (code not provided) |
 
 ### Create Maps
 Run the notebooks in the `create_maps` in the following order to create the LFMC and uncertainty maps. This assumes the [mapping models](#maps) have been created.
