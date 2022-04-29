@@ -103,7 +103,9 @@ def plot_results(fig_name, y, yhat, top_text=None, bottom_text=None,
 
     def add_text_boxes(ax, tl, br, lower, upper):
         if isinstance(tl, (dict, pd.Series)):
-            tl = f"$RMSE: {tl['RMSE']:.2f}%$\n$ubRMSE: {tl['ubRMSE']:.2f}%$\n$R^2: {tl['R2']:.2f}$"
+            tl = f"$RMSE: {tl['RMSE']:.2f}\%$\n" \
+                 f"$Bias: {tl['Bias']:.2f}\%$\n" \
+                 f"$R^2: {tl['R2']:.2f}$"
         if tl is not None:
             xloc = lower + TEXT_OFFSET
             yloc = upper - TEXT_OFFSET
@@ -152,7 +154,7 @@ def plot_results(fig_name, y, yhat, top_text=None, bottom_text=None,
 
     # Add other plot components
     if diagonal:
-        ax.plot([lower, upper], [lower, upper], '--', color=(0.5, 0.5, 0.5))
+        ax.plot([lower, upper], [lower, upper], ':', color=(0.5, 0.5, 0.5))
     ax.grid(show_grid)
     add_text_boxes(ax, top_text, bottom_text, lower, upper)
     if regress:
@@ -166,7 +168,7 @@ def plot_results(fig_name, y, yhat, top_text=None, bottom_text=None,
         return fig
 
 
-def calc_statistics(x, y, precision=2):
+def calc_statistics(y, yhat, ybar=None, precision=2):
     """Calculate model evaluation statistics
     
     Calculates the following statistics:
@@ -180,10 +182,16 @@ def calc_statistics(x, y, precision=2):
 
     Parameters
     ----------
-    x : array
-        The sample labels.
     y : array
+        The sample labels.
+    yhat : array
         The sample predictions.
+    ybar : int or float
+        The sample mean. If None, ybar = y.mean(). The default is None.
+        Specifying ybar allows calculation of R2 for a sub-sample using
+        the sample mean instead of the sub-sample mean. This allows
+        comparisons between the R2 for different sub-samples to be
+        compared, which can't be done is the sub-sample mean is used.
     precision : int
         Round calculated statistics to this number of decimal places 
 
@@ -193,15 +201,18 @@ def calc_statistics(x, y, precision=2):
         The calculated statistics.
 
     """
-    bias = np.mean(y) - np.mean(x)
+    bias = np.mean(yhat) - np.mean(y)
     bias = np.round(bias, precision)
-    rmse = np.sqrt(np.mean(np.square(y - x)))
+    rmse = np.sqrt(np.mean(np.square(yhat - y)))
     rmse = np.round(rmse, precision)
-    r = np.corrcoef(x, y)
+    r = np.corrcoef(y, yhat)
     r = np.round(r[0, 1], precision)
-    r2 = r2_score(x, y)
+    if ybar is None:
+        r2 = r2_score(y, yhat)
+    else:
+        r2 = 1 - (((yhat - y) ** 2).sum() / ((y - ybar) ** 2).sum())
     r2 = np.round(r2, precision)
-    ubrmse = np.sqrt(np.mean(np.square(y - x - bias)))
+    ubrmse = np.sqrt(np.mean(np.square(yhat - y - bias)))
     ubrmse = np.round(ubrmse, precision)
     return {'Bias': bias, 'R':r, 'R2':r2, 'RMSE': rmse, 'ubRMSE': ubrmse}
 
@@ -276,3 +287,43 @@ def bias_variance(model, tests, num_runs, source, all_tests=False):
     df['Bias min'] = [b.min() for b in bias]
     df['Bias max'] = [b.max() for b in bias]
     return df
+
+
+def samples_with_historical_data(all_samples, all_predictions, site_column='Site',
+                                 year_column='Sampling year'):
+    """Gets data for samples from sites with historical data.
+    
+    
+
+    Parameters
+    ----------
+    all_samples : DataFrame
+        Data frame containing the sample data. Should have a row for
+        all records in all_predictions, but may have extra rows.
+    all_predictions : DataFrame
+        Data frame containing the prediction data.
+    site_column : Str, optional
+        The name of the ``all_samples`` column containing the sampling
+        site. The default is 'Site'
+    year_column : Str, optional
+        The name of the ``all_samples`` column containing the sampling
+        year. The default is 'Sampling year'
+
+    Returns
+    -------
+    yearly_samples : DataFrame
+        DESCRIPTION.
+    yearly_predicts : DataFrame
+        DESCRIPTION.
+
+    """
+    temp_samples = all_samples.loc[all_predictions.index]
+    yearly_samples = []
+    years = temp_samples[year_column].unique()
+    for year in years:
+        sites = all_samples[all_samples[year_column] < year][site_column].unique()
+        yearly_samples.append(temp_samples[temp_samples[site_column].isin(sites)
+                                           & (temp_samples[year_column] == year)])
+    yearly_samples = pd.concat(yearly_samples)
+    yearly_predicts = all_predictions.loc[yearly_samples.index]
+    return yearly_samples, yearly_predicts

@@ -2,13 +2,9 @@
 
 import sys
 import os
-import platform
+# import platform
 
-# Add main code directory to path
-if platform.system() == 'Windows':
-    code_dir = os.path.dirname(sys.path[0])
-else:
-    code_dir = '..'
+code_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, code_dir)
 
 # Set Tensorflow message level

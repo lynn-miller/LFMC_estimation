@@ -166,7 +166,7 @@ def results_summary(model, tests, ensembles, means, variances=None, std_devs=Non
 
     """
     test_list = [str(test) for test in tests]
-    separate_index = pd.Series(test_list).apply(len).max() > 10
+    separate_index = pd.Series(test_list).apply(len).max() > 20
     if separate_index:
         index = [f'Test{t}' for t in range(len(tests))]
     else:
@@ -175,25 +175,17 @@ def results_summary(model, tests, ensembles, means, variances=None, std_devs=Non
     df_list = []
     captions = []
     if ensembles:
-#        edf = pd.concat([pd.concat({index[n]: e.loc[model]}) for n, e in enumerate(ensembles)])
-#        edf = edf.unstack().reindex(index)
         edf = pd.DataFrame([e.loc[model] for e in ensembles], index=index)
         df_list.append(edf)
         captions.append('Ensembles')
-#    mdf = pd.concat([pd.concat({index[n]: m.loc[model]}) for n, m in enumerate(means)])
-#    mdf = mdf.unstack().reindex(index)
     mdf = pd.DataFrame([m.loc[model] for m in means], index=index)
     df_list.append(mdf)
     captions.append('Means')
     if variances:
-#        vdf = pd.concat([pd.concat({index[n]: v.loc[model]}) for n, v in enumerate(variances)])
-#        vdf = vdf.unstack().reindex(index)
         vdf = pd.DataFrame([v.loc[model] for v in variances], index=index)
         df_list.append(vdf)
         captions.append('Variances')
     if std_devs:
-#        sdf = pd.concat([pd.concat({index[n]: s.loc[model]}) for n, s in enumerate(std_devs)])
-#        sdf = sdf.unstack().reindex(index)
         sdf = pd.DataFrame([s.loc[model] for s in std_devs], index=index)
         df_list.append(sdf)
         captions.append('Standard Deviations')
@@ -211,7 +203,7 @@ def results_summary(model, tests, ensembles, means, variances=None, std_devs=Non
     display_frames(df_list, captions, precision=precision)
 
 
-def display_bias_variance(model, tests, num_runs, source, all_tests=False, precision=3):
+def display_bias_variance(model, tests, num_runs, source, all_tests=False, heading=None, precision=3):
     """Displays the model bias and variance.
     
 
@@ -233,6 +225,9 @@ def display_bias_variance(model, tests, num_runs, source, all_tests=False, preci
         If ``True``, the bias and variance is calculated across all
         runs for all tests, as well as the individual tests. The
         default is False.
+    heading : str, optional
+        Display heading. If None, ``Model: {model}`` is used. The
+        default is None.
     precision : int, optional
         The floating-point precision to use when displaying the
         dataframe. The default is 3.
@@ -243,7 +238,8 @@ def display_bias_variance(model, tests, num_runs, source, all_tests=False, preci
 
     """
     df = bias_variance(model, tests, num_runs, source, all_tests=False)
-    heading = f"Model: {model}"
+    if heading is None:
+        heading = f"Model: {model}"
     print("\n" + heading)
     print("-" * len(heading))
     display_frames([df], precision=precision)

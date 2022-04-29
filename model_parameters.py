@@ -26,13 +26,9 @@ class ModelParams(dict):
         model_name : str, optional
             The name of the model. It should be a valid Keras model
             name. The default is 'default_model'.
-        conv_layers : int, optional
-            The number of convolutional layers to create. See the
-            ``set_layers`` method for more details. The default is 0.
-        fc_layers : int, optional
-            The number of fully connected or dense layers to create.
-            See the ``set_layers`` method for more details. The default
-            is 0.
+        * : int or list, optional
+            All other parameters are passed to the ``set_layers`` method
+            to add the convolutional and fully-connected layers.
         
     Attributes
     ----------
@@ -79,8 +75,10 @@ class ModelParams(dict):
             'diagnostics': False,
             'dataSources': [],
             'restartRun': None,
+            'derivedModels': None,
             'saveModels': False,
             'saveTrain': None,
+            'saveValidation': True,
             'plotModel': True,
 
             'randomSeed': 1234,
@@ -109,11 +107,11 @@ class ModelParams(dict):
             'auxFilename': None,
             'auxColumns': 9,
             'auxAugment': True,
-            'auxOneHotCols': ['Koppen'],
+            'auxOneHotCols': [],
             'targetColumn': 'LFMC value',
 
             # Data splitting parameters
-            'splitMethod': 'byYear',
+            'splitMethod': None,
             'splitSizes': (0.33, 0.067),
             'siteColumn': 'Site',
             'splitStratify': 'Land Cover',
@@ -127,7 +125,7 @@ class ModelParams(dict):
 
             # Overfitting controls
             'batchNormalise': True,
-            'dropoutRate': 0.3,
+            'dropoutRate': 0,
             'regulariser': 'keras.regularizers.l2(1.e-6)',
             'validationSet': False,
             'earlyStopping': False,
@@ -154,15 +152,34 @@ class ModelParams(dict):
     def set_layers(self, **kwargs):
         """Sets model layer parameters
         
-        Sets the parameters for the convolutional (``conv``) and fully
-        connected (``fc``) layers.
+        Sets the parameters for the convolutional (``conv``, ``*Conv``)
+        and fully connected (``fc``) layers.
 
         Parameters
         ----------
-        conv_layers : int, optional
-            The number of convolutional layers. The default is None.
-        fc_layers : int, optional
-            The number of fully connected layers. The default is None.
+        conv_layers : int or list, optional
+            The number of convolutional layers, or a list where the
+            list length is the number of layers and each entry in the
+            list is a dictionary of parameters for the layer. If ``0``
+            or ``[]``, any existing fc layers are removed. If ``None``,
+            any existing layers are not changed. The default is None.
+        fc_layers : int or list, optional
+            The number of fully connected (or dense) layers, or a list
+            where the list length is the number of layers and each
+            entry in the list is a dictionary of parameters for the
+            layer. If ``0`` or ``[]``, any existing fc layers are
+            removed. If ``None``, any existing layers are not changed.
+            The default is None.
+        * : int or list, optional
+            Any other parameters are assumed to be additional
+            convolutional layers with the name ``xxxConv``, where
+            ``xxx`` is the parameter name truncated at the first ``_``.
+            (e.g. to add the modisConv layers, specify modis_layers=n).
+            The value is the number of layers, or a list where the list
+            length is the number of layers and each entry in the list
+            is a dictionary of parameters for the layer. If ``0`` or
+            ``[]``, any existing fc layers are removed. If ``None``,
+            any existing layers are not changed. The default is None.
 
         Returns
         -------
@@ -302,7 +319,7 @@ class ModelParams(dict):
 
     _param_help = {
         'general':        'Dictionary of all parameters used to build an LFMC model. For more '
-                          'help run model_params.help("parameter").\nAvailable parameters are:',
+                          'help run ModelParams().help("parameter").\nAvailable parameters are:',
         'modelName':      'A name for the model; must be a valid Keras model name',
         'description':    'A free-format description of the model - only used for documentation',
         'modelClass':     'The Class for the model. This should be a sub-class of LfmcModel '
@@ -314,9 +331,20 @@ class ModelParams(dict):
         'dataSources':    'A list of the data sources used. If an empty list, the full list of '
                           'data sources the modelClass will process is assumed.',
         'restartRun':     'Used to restart a failed test. Specifies which run to start at.',
-        'saveModels':     'Set to True to save the models in h5 format.',
+        'derivedModels':  'The derived models to create and evaluate. A dictionary where the keys'
+                          ' are the model names and the values are a dictionary of parameters, '
+                          'including the model type (best, merge, or ensemble). e.g. to create a '
+                          'model called "merge10" by merging the last 10 checkpoints, set to '
+                          '"{\'merge10\': {\'type\': \'merge\', \'models\': 10}}". '
+                          'If "falsy", the standard set of derived models are created.',
+        'saveModels':     'Set to True, a derived model name or a list of derived model names to '
+                          'save the models in h5 format. If True the base model is saved. If '
+                          '"falsy", no models are saved.',
         'saveTrain':      'Set to True to save all training output or False to save no training '
                           'output. The default is to save training prediction statistics only.',
+        'saveValidation': 'Set to True (default) to save validation predictions. Note: if there '
+                          'is validation data, the validation statistics are always saved. '
+                          'Ignored if there is no validation data.',
         'plotModel':      'Set to True (default) to create a model plot.',
         'randomSeed':     'Number used to set all random seeds (for random, numpy and tensorflow)',
         'modelRuns':      'Number of times to buid and run the model',

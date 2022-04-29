@@ -23,8 +23,11 @@ def train_test_split(model_params, samples, X, y):
     Splits data into test, training and optionally validation sets. The
     model parameters determine how to split the data.
     
+    Note: this function makes a single train/test split. kfold_split
+    is used if multiple train/test splits are required.
+    
     validationSet:
-        Indicates if a validation set should be created
+        Indicates if a validation set should be created.
     
     splitMethod:
       - random: samples are split randomly
@@ -53,11 +56,16 @@ def train_test_split(model_params, samples, X, y):
         bySite splits.
     
     splitYear:
-        The year to use for byYear splitting. Samples later than this
-        year go into the test set. Samples earlier than this year go
-        into the training set. Samples for this year go into the
-        validation set if used, otherwise go into the training set.
-        Used for byYear splits.
+      - If splitMethod is "byYear" and splitFolds is 0: Samples for
+        this year or later go into the test set. Samples earlier than
+        this year go into the training set.
+      - If splitMethod is "byYear" and splitFolds is 1: Samples for
+        this year go into the test set. Samples earlier than this year
+        go into the training set. Samples for later than this year are
+        not used.
+      - If splitMethod is "random" or "bySite": Any samples in the test
+        set for earlier than this year are removed. Any samples in the
+        training or validation sets for this year or later are removed.
                 
     randomSeed:
         The seed for the random number generator. Used for random and
@@ -132,11 +140,15 @@ def train_test_split(model_params, samples, X, y):
     elif not model_params['splitMethod']:    # No test set needed
         test_index = None
         train_val_index = np.array([True] * samples.shape[0])
-        train_index, val_index = train_val_split(
-                num_samples=samples.shape[0],
-                val_size=model_params['splitSizes'][1],
-                train_val_idx=train_val_index,
-                random_seed=model_params['randomSeed'])
+        if model_params['validationSet']:
+            train_index, val_index = train_val_split(
+                    num_samples=samples.shape[0],
+                    val_size=model_params['splitSizes'][1],
+                    train_val_idx=train_val_index,
+                    random_seed=model_params['randomSeed'])
+        else:
+            train_index = train_val_index
+            val_index = None
     else:
         raise ValueError(f"Invalid train/test split method: {model_params['splitMethod']}")
 
@@ -329,7 +341,8 @@ def train_test_subprocess(pool, **kwargs):
         name = model.params['modelName']
         min_loss = model.train_result['minLoss']
         run_time = model.train_result['runTime']
-        print(f"{name} training results: minLoss: {min_loss:.3f}, runTime: {run_time:.3f}")
+        if model.params['diagnostics']:
+            print(f"{name} training results: minLoss: {min_loss:.3f}, runTime: {run_time:.3f}")
 
     results = pool.apply_async(train_test_model, kwds=kwargs, callback=success)
     sleep(2)    # Wait a little so sub-processes aren't submitted too quickly
@@ -539,6 +552,8 @@ def create_models(model_params, samples, X, y):
                 if len(models) < restart:
                     warnings.warn(f'Restart at run {restart} requested, but only {len(models)} ' \
                                   'runs found. Missing runs ignored.')
+                else:
+                    print(f'Restarting at run {restart}')
             else:
                 restart = 0
                 models = ModelList(model_name, model_dir)
@@ -596,6 +611,31 @@ def create_models(model_params, samples, X, y):
     return models
 
 
+def set_test_params(experiment, model_params, test_num):
+    test = experiment['tests'][test_num]
+    try:
+        test_name = experiment['testNames'][test_num]
+    except:
+        test_name = f"{test_num}"
+    print(f'Test {test_name} - {test}\n')
+    test_params = ModelParams(model_params.copy())
+    test_params['testName'] = test_name
+    test_params['modelName'] = '_'.join([test_params['modelName'], f"test{test_num}"])
+    test_params['modelDir'] = os.path.join(test_params['modelDir'], f"test{test_num}")
+    test_params.update(test)
+    # Update model layers
+    for layer in experiment['layerTypes'] & test.keys():
+        layer_parms = experiment.get(layer, {}).copy()
+        layer_parms.update(test[layer])
+        test_params.set_layers(
+            **{layer.replace('Conv', '') + '_layers': layer_parms['numLayers']})
+        for key, value_list in layer_parms.items():
+            if key != 'numLayers':
+                for layer_num, value in enumerate(value_list):
+                    test_params[layer][layer_num][key] = value
+    return test_params
+    
+    
 def run_experiment(experiment, model_params, samples, X, y):
     """Runs an LFMC experiment
     
@@ -630,7 +670,7 @@ def run_experiment(experiment, model_params, samples, X, y):
     model_dir = model_params['modelDir']
     print_str = f"Experiment {experiment['name']} - {experiment['description']}"
     print(f"{'=' * len(print_str)}\n{print_str}\n{'=' * len(print_str)}\n")
-    restart = experiment.get('restart', 0)
+    restart = experiment.get('restart', 0) or 0
     if restart == 0:
         ex_models = ModelList(model_name, model_dir)
         file_name = 'model_params.json'
@@ -642,26 +682,12 @@ def run_experiment(experiment, model_params, samples, X, y):
         file_name = f'model_params{restart}.json'
     model_params.save(file_name)
 
-    for test_num, test in enumerate(experiment['tests'][restart:], restart):
+    for test_num in range(restart, len(experiment['tests'])):
         if test_num != 0:
             print(f"\n{'-' * 70}\n")
-        print(f'test {test_num} - {test}\n')
-        # Create model parameters for this test
-        test_params = ModelParams(model_params.copy())
-        test_params['modelName'] = f"{model_name}_test{test_num}"
-        test_params['modelDir'] = os.path.join(model_dir, f"test{test_num}")
-        test_params.update(test)
-        # Update model layers
-        for layer in experiment['layerTypes'] & test.keys():
-            layer_parms = experiment.get(layer, {}).copy()
-            layer_parms.update(test[layer])
-            test_params.set_layers(
-                **{layer.replace('Conv', '') + '_layers': layer_parms['numLayers']})
-            for key, value_list in layer_parms.items():
-                if key != 'numLayers':
-                    for layer_num, value in enumerate(value_list):
-                        test_params[layer][layer_num][key] = value
+        test_params = set_test_params(experiment, model_params, test_num)
         test_params.save('model_params.json')
         ex_models.append(create_models(test_params, samples, X, y))
-        model_params['restartRun'] = None  # Turn off any restart after running the first test
+        if not experiment.get('resumeAllTests', False):
+            model_params['restartRun'] = None  # Turn off any restart after running the first test
     return ex_models

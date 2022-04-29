@@ -693,7 +693,12 @@ def create_ensembles(model_dir, models='run*', epoch='', ensemble_name='ensemble
 
     Returns
     -------
-    None.
+    ensembles : DataFrame
+        A dataframe containing the ensemble predictions indexed by the
+        sample ids. Columns are the checkpoint (derived) models.
+    all_stats : DataFrame
+        A dataframe containing the prediction statistics indexed by the
+        checkpoint (derived) model. Columns are the statistic type.
     """
     if isinstance(models, ModelList):
         stack_results = pd.concat([model.all_results.stack() for model in models], axis=1)
@@ -729,7 +734,7 @@ def create_ensembles(model_dir, models='run*', epoch='', ensemble_name='ensemble
         return ensembles, all_stats
 
 
-def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_sizes, random_seed=99):
+def generate_ensembles(model_predicts, ensemble_runs, ensemble_sizes, random_seed=99):
     """ Generate sets of ensembles
     
     Can generate sets of ensembles of varying sizes for a test or model
@@ -739,16 +744,13 @@ def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_size
     Parameters
     ----------
     model_predicts : list
-        Either a list of prediction data frames, or a list of lists
-        (one for each test) of prediction data frames.
-    model_stats : list
-        Either a list of prediction statistics, or a list of lists
-        (one for each test) of prediction statistics.
+        Either a list of prediction data frames forming a model set
+        Or a list of lists of prediction data frames forming an
+        experiment (one list of prediction data frames for each test).
     ensemble_runs : int
         The number of ensembles (for each test) to create.
     ensemble_sizes : int or list
-        Either the size of the ensembles (if num_tests is not ``None``)
-        or a list of ensemble sizes (if num_tests is ``None``).
+        Either the size of the ensembles or a list of ensemble sizes.
     random_seed : int, optional
         The random number generator seed. The default is 99.
 
@@ -756,13 +758,13 @@ def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_size
     -------
     preds : list
         a list of the predictions made by each ensemble. A list of
-        lists if num_tests is not None.
+        lists if model_predicts is a list of data frames.
     stats : list
         a list of the prediction statistics for each ensemble. A list
-        of lists if num_tests is not None.
+        of lists if model_predicts is a list of data frames.
 
     """    
-    def gen_ensemble_set(model_predicts, model_stats, ensemble_runs, ensemble_size):
+    def gen_ensemble_set(model_predicts, ensemble_runs, ensemble_size):
         preds = []
         stats = []
         num_models = len(model_predicts)
@@ -771,10 +773,12 @@ def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_size
                 sample_list = random.sample(range(num_models), k=ensemble_runs)
                 for sample in sample_list:
                     preds.append(model_predicts[sample])
-                    stats.append(model_stats[sample])
             else:
                 preds = model_predicts
-                stats = model_stats
+            for p in preds:
+                p_iter = p.drop('y', axis=1).iteritems()
+                s = {pred_[0]: calc_statistics(p.y, pred_[1]) for pred_ in p_iter}
+                stats.append(pd.DataFrame.from_dict(s, orient='index'))
         else:
             for run in range(ensemble_runs):
                 if run % 10 == 9:
@@ -798,7 +802,7 @@ def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_size
         for ensemble_size in ensemble_sizes:
             print(f'Generating ensembles - size {ensemble_size}:', end=' ')
             preds_, stats_ = gen_ensemble_set(
-                model_predicts, model_stats, ensemble_runs, ensemble_size)
+                model_predicts, ensemble_runs, ensemble_size)
             all_stats.append(stats_)
             predict.append(preds_)
             print('')
@@ -810,7 +814,7 @@ def generate_ensembles(model_predicts, model_stats, ensemble_runs, ensemble_size
         for test_ in range(len(model_predicts)):
             print(f'Generating ensembles - test {test_}:', end=' ')
             preds_, stats_ = gen_ensemble_set(
-                model_predicts[test_], model_stats[test_], ensemble_runs, ensemble_sizes)
+                model_predicts[test_], ensemble_runs, ensemble_sizes)
             all_stats.append(stats_)
             predict.append(preds_)
             print('')
@@ -855,10 +859,21 @@ def train_model(model, train, val):
         model.plot_train_hist(metric='loss')
 
     # Create the derived models
-    _ = model.best_model()                      # Extract the best checkpoint model
-    model.merge_models('merge10', 10)           # Merge the last 10 checkpoints into a new model
-    model.ensemble_models('ensemble10', 10)     # Create an ensembled model of last 10 checkpoints
-    _ = model.best_model(n=10, merge=True)      # Merge the best 10 checkpoint models
+    derived_models = model.params.get('derivedModels', False)
+    if isinstance(derived_models, dict):
+        for m_name, m_params in derived_models.items():
+            m_type = m_params.pop('type', '').lower()
+            if m_type == 'best':
+                model.best_model(m_name, **m_params)
+            elif m_type == 'merge':
+                model.merge_models(m_name, **m_params)
+            elif m_type == 'ensemble':
+                model.ensemble_models(m_name, **m_params)
+    else:
+        _ = model.best_model()                      # Extract the best checkpoint model
+        model.merge_models('merge10', 10)           # Merge the last 10 checkpoints into a new model
+        model.ensemble_models('ensemble10', 10)     # Create an ensembled model of last 10 checkpoints
+        _ = model.best_model(n=10, merge=True)      # Merge the best 10 checkpoint models
     
     # Save models, if required
     save_models = model.params['saveModels']
@@ -874,7 +889,7 @@ def train_model(model, train, val):
             model.save_to_disk('base')
 
 
-def evaluate_model(model, data, which=None, test_name=None, train_time=False, save_preds=True):
+def evaluate_model(model, data, which=None, test_name=None, train_stats=False, save_preds=True):
     """Evaluates a model.
     
     Evaluates a model using the ``data`` dataset. If the ``which``
@@ -898,9 +913,9 @@ def evaluate_model(model, data, which=None, test_name=None, train_time=False, sa
         The name of the test. Prefixed to the prediction and statistics
         file names. The default is None, meaning the default file names
         are used.
-    train_time : bool, optional
-        Indicates if the model training time should be stored with the
-        prediction statistics. The default is False.
+    train_stats : bool, optional
+        Indicates if the model training time and counts should be
+        stored with the prediction statistics. The default is False.
     save_preds : bool, optional
         Indicates if the predictions should be saved. If ``False`` only
         the prediction statistics are saved. The default is True.
@@ -924,10 +939,14 @@ def evaluate_model(model, data, which=None, test_name=None, train_time=False, sa
     all_results = pd.DataFrame({'y': data['y'],
                                 **{name: result['predict'] for name, result in results.items()}})
     all_stats = pd.DataFrame([r['stats'] for r in results.values()], index=results.keys())
+    all_stats['sampleCount'] = data['y'].shape[0]
     all_stats['runTime'] = [r['runTime'] for r in results.values()]
-    if train_time:
-        all_stats['trainTime'] = [model.train_result['runTime']] * len(results.keys())
-        all_stats['buildTime'] = [model.build_time] * len(results.keys())
+    if train_stats:
+        all_stats['trainTime'] = model.train_result['runTime']
+        all_stats['buildTime'] = model.build_time
+        weights = model.weight_counts() 
+        all_stats['trainableWeights'] = weights[0]
+        all_stats['nonTrainableWeights'] = weights[1]
 
     if test_name is None:
         # These are the main test results
@@ -975,9 +994,12 @@ def train_and_evaluate(model, train, val, test):
     train_model(model, train, val)
     if test['y'] is not None:
         evaluate_model(model, test)
+    if val['y'] is not None:
+        evaluate_model(model, val, test_name='validation',
+                       save_preds=model.params['saveValidation'])
     if model.params['saveTrain'] is not False:  # i.e. is None or True
-        evaluate_model(model, train, 'merge10', 'train',
-                       train_time=True, save_preds=model.params['saveTrain'])
+        evaluate_model(model, train, 'base', 'train',
+                       train_stats=True, save_preds=model.params['saveTrain'])
 
 
 def train_test_model(model_params, train, val, test):

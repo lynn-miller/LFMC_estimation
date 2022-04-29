@@ -523,13 +523,31 @@ class LfmcModel():
         return {'predict': yhat, 'stats': stats, 'runTime': test_time}
 
     def summary(self):
-        """Prints the model summary
+        """Prints the model summary.
         
         Returns
         -------
         None.
         """
         self.model.summary()
+        
+    def weight_counts(self):
+        """Gets the number of model weights
+        
+        Calculates and returns the number of trainable and
+        non-trainable weights in the model.
+
+        Returns
+        -------
+        trainable : np.int32
+            The number of trainable weights in the model.
+        untrainable : np.int32
+            The number of non-trainable weights in the model.
+
+        """
+        trainable = np.sum([np.prod(v.get_shape()) for v in self.model.trainable_weights])
+        untrainable = np.sum([np.prod(v.get_shape()) for v in self.model.non_trainable_weights])
+        return (trainable, untrainable)
     
     def plot(self, file_name):
         """Saves model plot
@@ -632,7 +650,6 @@ class LfmcModel():
         """
         if not(model_name or model_list):
             model_list = ['base'] + list(self.derived_models.keys())
-        print(model_list or [model_name])
         for mn in model_list or [model_name]:
             if mn == 'base':
                 self.model.save(os.path.join(self.model_dir, 'base.h5'))
