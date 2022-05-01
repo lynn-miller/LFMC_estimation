@@ -1,5 +1,7 @@
-# LFMC_Nowcasting
-This code reproduces the results in the paper "Multi-modal Temporal CNNs for Live Fuel Moisture Content Estimation" (submitted for publication). Note that due to random variable seed settings and randomness in the scheduling of Tensorflow tasks on GPUs, results obtained may differ slightly from those shown in the paper, but should be broadly similar.
+# Multi-modal Temporal CNNs for Live Fuel Moisture Content Estimation
+This repository contains code to build and evaluate temporal CNNs for Live Fuel Moisture Content Estimation (LFMC). These models (Multi-tempCNN) use time series of reflectance and meteorological data, together with some auxiliary variables to train the CNNs to estimate LFMC. The code reproduces the results in the paper "Multi-modal Temporal CNNs for Live Fuel Moisture Content Estimation" (submitted for publication).
+
+Note that due to random variable seed settings and randomness in the scheduling of Tensorflow tasks on GPUs, results obtained may differ slightly from those shown in the paper, but should be broadly similar.
 
 ## Data
 Seven data sources are used:
@@ -45,34 +47,44 @@ Run the three notebooks in the `extract_data` directory in the following order:
 3. `Extract PRISM Data.ipynb`
 
 ### Build Models
-There is a notebook or script in the `build_models` directory to build the models used in each of the experiments in the paper. Most of the results are from the <a name="main">main models</a> created by:
-- `out-of-site_models.py`
-- `within-site_models.py`
+#### Multi-tempCNN and Modis-tempCNN architecture 
+The three architecture files define the Multi-tempCNN architectures presented in the paper, plus the Modis-tempCNN baseline architecture:
+- Multi-tempCNN out-of-site architecture: `architecture_out_of_site.py`
+- Multi-tempCNN within-site architecture: `architecture_within_site.py`
+- Modis-tempCNN architecture: `architecture_modis_tempCNN.py`
 
-The models for the <a name="maps">LFMC maps</a> are created by:
-- `map2017_modis_tempCNN.ipynb`
-- `map2017_out-of-site_model.ipynb`
+#### Experiment Models
+There is a notebook or script in the `build_models` directory to build the models used in each of the experiments in the paper. Each of these scripts builds a pool of 50 model sets. These model set pools are used by the [ensemble creation](#ensemble-creation) scripts to generate the sets of ensembles used to evaluate the Multi-tempCNN models.
 
-For the models for the comparison tests (section 3.1.4 in the paper) run <a name="comp">`comparison models.ipynb`</a>.
+Most of the results are from the <a name="main">main Multi-tempCNN models</a> created by:
+- Out-of-site model set pool: `out-of-site_models.py`
+- Within-site model set pool: `within-site_models.py`
 
-For the <a name="input">input ablation tests</a> (section 3.3.1 in the paper) run:
+To create the model set pools for the comparison tests (section 3.1.4 in the paper) run <a name="comp">`comparison models.ipynb`</a>.
+
+To create the model set pools for the <a name="input">input ablation tests</a> (section 3.3.1 in the paper) run:
 - `out-of-site_omit_one.py`
 - `within-site_omit_one.py`
 
-For the architecture <a name="ablation">ablation tests</a> (section 3.3.2 in the paper) run:
+To create the model set pools for the architecture <a name="ablation">ablation tests</a> (section 3.3.2 in the paper) run:
 - `out-of-site_ablation.py`
 - `within-site_ablation.py`
 
-The remaining two notebooks (`out-of-site run times.ipynb` and `within-site run times.ipynb`) were used to determine the run times reported in sections 3.1.5 and 3.3.2 of the paper.
+Notebooks used to determine the run times reported in sections 3.1.5 and 3.3.2 of the paper:
+- `out-of-site run times.ipynb`
+- `within-site run times.ipynb`
 
-The three architecture files define the two architectures presented in the paper, plus the Modis-tempCNN baseline architecture.
+#### LFMC map models
+The models used to generate the <a name="maps">LFMC maps</a> are created by:
+- Modis-tempCNN model: `map2017_modis_tempCNN.ipynb`
+- Multi-tempCNN out-of-site model: `map2017_out-of-site_model.ipynb`
 
 ### Analyse Results
 #### Ensemble Creation
-There are a set of notebooks to generate the ensembles from the model pools:
-- <a name="ens-main">`Generate main ensembles.ipynb` creates ensembles from the [main models](#main).</a>
-- <a name="ens-comp">`Generate comparison ensembles.ipynb` creates ensembles from the [comparison models](#comp).</a>
-- <a name="ens-change">`Generate changes ensembles.ipynb` creates ensembles from the [input ablation models](#input) and [architecture ablation models](#ablation).</a>
+There are a set of notebooks to generate the ensembles from the model set pools:
+- <a name="ens-main">`Generate main ensembles.ipynb` creates ensembles from the [main out-of-site and within-site model set pools](#main).</a>
+- <a name="ens-comp">`Generate comparison ensembles.ipynb` creates ensembles from each of the [comparison model set pools](#comp).</a>
+- <a name="ens-change">`Generate changes ensembles.ipynb` creates ensembles from the [input ablation](#input) and [architecture ablation](#ablation)</a> model set pools.
 #### Generate Results and Figures
 The notebooks to calculate the evalation metrics and generate the figures are:
 | Notebook | Relevant section in paper | Pre-requisites |
