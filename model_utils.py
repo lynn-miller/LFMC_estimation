@@ -861,7 +861,8 @@ def train_model(model, train, val):
     # Create the derived models
     derived_models = model.params.get('derivedModels', False)
     if isinstance(derived_models, dict):
-        for m_name, m_params in derived_models.items():
+        for m_name, m_params_ in derived_models.items():
+            m_params = m_params_.copy()
             m_type = m_params.pop('type', '').lower()
             if m_type == 'best':
                 model.best_model(m_name, **m_params)
