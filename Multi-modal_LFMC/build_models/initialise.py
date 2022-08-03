@@ -5,7 +5,7 @@ import os
 import pathlib
 
 # Add main code directory to path
-code_dir = pathlib.Path(__file__).parent.parent
+code_dir = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(code_dir))
 
 # Set Tensorflow message level
