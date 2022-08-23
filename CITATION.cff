@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite both the article from preferred-citation and the software itself."
 authors:
 - family-names: "Miller"
   given-names: "Lynn"
@@ -7,4 +7,23 @@ authors:
 title: "LFMC_estimation"
 version: 1.0.0
 date-released: 2022-04-29
-url: "https://github.com/lynn-miller/LFMC_estimation"
+url: "https://github.com/lynn-miller/LFMC_estimation/tree/Multi_modal_LFMC"
+preferred-citation:
+  type: article
+  authors:
+  - family-names: "Miller"
+    given-names: "Lynn"
+  - family-names: "Zhu"
+    given-names: "Liujun"
+  - family-names: "Yebra"
+    given-names: "Marta"
+  - family-names: "Rüdiger"
+    given-names: "Christoph"
+  - family-names: "Webb"
+    given-names: "Geoffrey I."
+  doi: "10.1016/j.envsoft.2022.105467"
+  journal: "Environmental Modelling & Software"
+  start: 105467 # First page number
+  title: "Multi-modal temporal CNNs for live fuel moisture content estimation"
+  volume: 156
+  year: 2022
