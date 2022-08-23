@@ -36,7 +36,7 @@ def import_model_class(model_class):
     return getattr(module, model_class)
 
 
-def load_model(model_dir):
+def load_model(model_dir, epoch=None):
     model_file = 'model_params.json'
     try:
         with open(os.path.join(model_dir, model_file), 'r') as f:
@@ -45,10 +45,18 @@ def load_model(model_dir):
         raise FileNotFoundError(f'Model parameters missing: {model_file}')
     model_class = model_params.get('modelClass', 'LfmcModel')
     model = import_model_class(model_class)()
-    model.load(os.path.join(model_dir, ''))
+#    model.load(os.path.join(model_dir, ''))
+    model.load(model_dir)
+    if epoch is None:
+        dir_name = model_dir
+    else:
+        dir_name = os.path.join(model_dir, f'epoch{epoch}')
+        model.model_dir = dir_name
+        model.params['modelDir'] = dir_name
+        model.params['epochs'] = epoch
     try:
-        model.all_results = pd.read_csv(os.path.join(model_dir, 'predictions.csv'), index_col=0)
-        model.all_stats = pd.read_csv(os.path.join(model_dir, 'predict_stats.csv'), index_col=0)
+        model.all_stats = pd.read_csv(os.path.join(dir_name, 'predict_stats.csv'), index_col=0)
+        model.all_results = pd.read_csv(os.path.join(dir_name, 'predictions.csv'), index_col=0)
     except:
         pass
     return model
@@ -118,7 +126,7 @@ class LfmcModel():
     def __init__(self, params=None, inputs=None):
         if params is not None:
             self.params = params
-            self.model_dir = os.path.join(params['modelDir'], '')  # add separator if necessary
+            self.model_dir = params['modelDir']
             self.monitor = 'val_loss' if params['validationSet'] else 'loss'
             self._set_random_seeds()
             self._make_temp_dir()
@@ -135,8 +143,8 @@ class LfmcModel():
             self.compile()
             self.set_callbacks()
             self.build_time = round(time.time() - start_train_time, 2)
-            if self.params['plotModel']:
-                self.plot('model_plot.png')
+            # if self.params['plotModel']:
+            #     self.plot(file_name='model_plot.png')
         
     def _set_random_seeds(self):
         seed = self.params.get('modelSeed', self.params['randomSeed'])
@@ -162,22 +170,32 @@ class LfmcModel():
             os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
         else:  # only configure GPUs if a non-deterministic run is ok
             gpus = tf.config.list_physical_devices('GPU')
-            gpu_device = self.params.get('gpuDevice', 0)
+            device_nums = self.params.get('gpuDevice', 0)
             gpu_memory = self.params.get('gpuMemory', 0)
-            if gpus and gpu_memory:
-                tf.config.set_visible_devices(gpus[gpu_device], 'GPU')
-                tf.config.set_logical_device_configuration(
-                    gpus[gpu_device],
-                    [tf.config.LogicalDeviceConfiguration(memory_limit=gpu_memory)])
+            if gpus and device_nums is not None:
+                if isinstance(device_nums, int):
+                    gpu_devices = [gpus[device_nums]]
+                else:
+                    gpu_devices = [gpus[num] for num in device_nums]
+                tf.config.set_visible_devices(gpu_devices, 'GPU')
+                if gpu_memory:
+                    mem_config = tf.config.LogicalDeviceConfiguration(memory_limit=gpu_memory)
+                    for device in gpu_devices:
+                        tf.config.set_logical_device_configuration(device, [mem_config])
         
     def _inputs_to_list(self, inputs, build=False):
+        parent_source = 'parent'
+        sources = self.params['dataSources'].copy()
+        if parent_source in self.input_list and parent_source in inputs.keys():
+            sources.append(parent_source)
         if build:
             return [keras.Input(inputs[source].shape[1:], name=source)
                     for source in self.input_list]
         else:
-            return [inputs[source] for source in self.params['dataSources']]  # self.input_list]
+            return [inputs[source] for source in sources]
 
     def _build_inputs(self, inputs):
+        parent_source = 'parent'
         if self.params['dataSources'] == []:
             self.params['dataSources'] = self.input_list
         elif not set(self.params['dataSources']).issubset(self.input_list):
@@ -186,6 +204,9 @@ class LfmcModel():
         build_data = {}
         for source in self.params['dataSources']:   # self.input_list:
             build_data[source] = keras.Input(inputs[source].shape[1:], name=source)
+        if parent_source in self.input_list and parent_source in inputs.keys():
+            parent_size = inputs[parent_source].shape[1:]
+            build_data[parent_source] = keras.Input(parent_size, name=parent_source)
         return build_data
 
     def _merge_inputs(self, inputs, merge_function):
@@ -344,6 +365,25 @@ class LfmcModel():
         for i, block_params in enumerate(self.params.get(block_name, [])):
             for layer in block_func(f'{short_name}{i}', block_params):
                 x = layer(x)
+        return x
+
+    def _final_layer(self, block_name='final', input_=None):
+        if input_ is None:
+            return None
+        x = input_
+        if self.params.get('classify'):
+            units = self.params.get('numClasses', 2)
+            if units <= 2:
+                units = 1
+                act = 'sigmoid'
+            else:
+                act = 'softmax'
+        else:
+            units = 1
+            act = 'linear'
+        x = keras.layers.Dense(units, name=block_name,
+                               kernel_initializer=self.params['initialiser'],
+                               activation=act)(x)
         return x
     
     def build(self, inputs):
@@ -519,7 +559,7 @@ class LfmcModel():
             if fig_name is None:
                 fig_name = 'base' if model_name is None else model_name
             fig = plot_results(f'{fig_name} Results', y, yhat, stats)
-            fig.savefig(self.model_dir + fig_name + '.png', dpi=300)
+            fig.savefig(os.path.join(self.model_dir, fig_name + '.png'), dpi=300)
         return {'predict': yhat, 'stats': stats, 'runTime': test_time}
 
     def summary(self):
@@ -549,7 +589,7 @@ class LfmcModel():
         untrainable = np.sum([np.prod(v.get_shape()) for v in self.model.non_trainable_weights])
         return (trainable, untrainable)
     
-    def plot(self, file_name):
+    def plot(self, dir_name=None, file_name='model_plot.png'):
         """Saves model plot
         
         Calls the Keras plot_model utility to create an image of the
@@ -564,8 +604,9 @@ class LfmcModel():
         -------
         None.
         """
-        outFile = self.model_dir + file_name
-        keras.utils.plot_model(self.model, to_file=outFile, show_shapes=True,
+        outdir = dir_name or self.model_dir
+        out_file = os.path.join(outdir, file_name)
+        keras.utils.plot_model(self.model, to_file=out_file, show_shapes=True,
                                show_layer_names=True)
 
     def load(self, model_dir):
@@ -583,7 +624,7 @@ class LfmcModel():
         -------
         None.
         """
-        self.model_dir = os.path.join(model_dir, '')  # add separator if necessary
+        self.model_dir = model_dir # os.path.join(model_dir, '')  # add separator if necessary
         with open(os.path.join(model_dir, 'model_params.json'), 'r') as f:
             self.params = ModelParams(source = f)
         self.monitor = 'val_loss' if self.params['validationSet'] else 'loss'
@@ -603,7 +644,7 @@ class LfmcModel():
         -------
         None.
         """
-        self.history.to_csv(self.model_dir + 'train_history.csv', index=False)
+        self.history.to_csv(os.path.join(self.model_dir, 'train_history.csv'), index=False)
         
     def load_model(self, model_name='base'):
         """Loads a derived model
@@ -699,9 +740,10 @@ class LfmcModel():
         self.callback_list = None
         keras.backend.clear_session()
         gc.collect()
-        for file in self._get_model_list(sort=False):
-            os.remove(file)
-        os.rmdir(self.temp_dir)
+        if hasattr(self, 'temp_dir'):
+            for file in self._get_model_list(sort=False):
+                os.remove(file)
+            os.rmdir(self.temp_dir)
         
     def get_models(self, models=None, last_n=False, load=False):
         """Gets a subset of checkpoint models
@@ -884,7 +926,7 @@ class LfmcModel():
         plt.axis([0, self.params['epochs'], min_y, max_y])
         plt.legend()
         plt.title(f'Training Results - {metric}')
-        plt.savefig(self.model_dir + file_name + '.png', dpi=300)
+        plt.savefig(os.path.join(self.model_dir, file_name + '.png'), dpi=300)
         plt.close()
 
 
@@ -926,6 +968,8 @@ class LfmcTempCnn(LfmcModel):
         -------
         None.
         """
+        flatten = keras.layers.Flatten
+        concatenate = keras.layers.Concatenate
         inputs = self._build_inputs(inputs)
         # Convolve MODIS data if required
         modis = inputs.get('modis')
@@ -934,18 +978,16 @@ class LfmcTempCnn(LfmcModel):
         prism = inputs.get('prism')
         prism = self._add_block('prismConv', self._conv1d_block, prism)
         # Stack modis and prism data
-        stack = self._merge_inputs([modis, prism], keras.layers.Concatenate(name='stack', axis=2))
-        # Flatten
-        if stack is not None:
-            stack = keras.layers.Flatten(name='flatten')(stack)
-        # Combine EO and auxiliary features
+        modis = flatten(name='modis_flatten')(modis) if modis is not None else None
+        prism = flatten(name='prism_flatten')(prism) if prism is not None else None
+        daily = self._merge_inputs([modis, prism], concatenate(name='daily'))
+         # Combine EO and auxiliary features
         aux = inputs.get('aux')
-        full = self._merge_inputs([stack, aux], keras.layers.Concatenate(name='concat'))
+        full = self._merge_inputs([daily, aux], concatenate(name='concat'))
         # Add the dense layers
         full = self._add_block('fc', self._dense_block, full)
         # Add the output layer
-        full = keras.layers.Dense(1, kernel_initializer=self.params['initialiser'],
-                                  activation='linear', name='final')(full)
+        full = self._final_layer('final', full)
         self.model = keras.Model(inputs=inputs.values(), outputs=full,
                                  name=self.params['modelName'])
         if self.params['diagnostics']:

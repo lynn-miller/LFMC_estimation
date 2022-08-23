@@ -4,13 +4,146 @@ import json
 import os
 import pprint
 
-class ModelParams(dict):
+from copy import deepcopy
+
+class ParamDict(dict):
+    """A parameter dictionary
+    
+    Extends the dictionary class by adding a help function and a
+    default set of keys. Includes a method to save the parameters to a
+    json fileor as a json string. The __init__ function allows loading
+    parameters from a json string or file as well as from a dict.
+    
+    Parameters
+    ----------
+    source : None, dict, str, or file object, optional
+      - If dict: A dictionary containing all parameters
+      - If str: A string representation of parameters in JSON format.
+      - If file object: An open JSON file containing all parameters.
+      - If None: The object is initialised with defaults.
+      - The default is None.
+        
+    Attributes
+    ----------
+    _param_help: dict
+        A dictionary containing the ``help`` text for each model
+        parameter. The ``general`` key contains the ``help`` text for
+        the object.
+    """
+
+    def __init__(self, source=None):
+        parameters = self.set_defaults()
+        if isinstance(source, dict):   # Set parameters from a dictionary
+            parameters.update(source)
+        elif type(source) is str:  # Set parameters from a JSON string
+            parameters.update(json.loads(source))
+        elif source:               # Set parameters from a JSON input file
+            parameters.update(json.load(source))
+        super(ParamDict, self).__init__(parameters)
+        
+    def set_defaults(self):
+        """Returns the default parameter dictionary.
+        
+        Returns
+        -------
+        dict
+            An empty dictionary.
+        """
+        return {}
+
+    def __str__(self):
+        return pprint.pformat(self, width=100, sort_dicts=False)
+
+    def save(self, file_stream=None, directory=None):
+        """Saves the model parameters
+        
+        Convert the model parameters dictionary to a JSON string and
+        optionally save to a file.
+        
+        Parameters
+        ----------
+        file_stream : str or file handle, optional
+            Either the name of the output file, or a file handle for
+            the output file. If None, the converted JSON string is
+            returned. The default is None.
+        directory : str, optional
+            If file_stream is str, the directory the output file is
+            created in. It will be created if it doesn't exist. The
+            default is ``self['modelDir']`` if this key exists, else
+            None.
+
+        Returns
+        -------
+        str
+            The JSON representation of the model parameters. Only
+            returned if no file stream parameter specified.
+
+        """
+        if file_stream is None:               # No output file, return parameters as a JSON string
+            return json.dumps(self, indent=2)
+        elif isinstance(file_stream, str):    # File name provided, open file and save parameters
+            if not directory:
+                try:
+                    directory = self['modelDir']
+                except:
+                    raise FileNotFoundError('No directory specified')
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+            with open(os.path.join(directory, file_stream), 'w') as f:
+                json.dump(self, f, indent=2)
+        else:                                 # File stream provided, save parameters
+            json.dump(self, file_stream, indent=2)
+
+    def help(self, key=None):
+        """Prints a help message
+        
+        Prints the general help message if no key provided, or the help
+        message for the specified key.
+        
+        Parameters
+        ----------
+        key : str, optional
+            The key for which help is requested. If None, the general
+            help message is displayed. The default is None.
+
+        Returns
+        -------
+        None.
+        """
+        def pp(text, indent=0, quote=False):
+            spaces = " " * indent
+            if quote:
+                out = pprint.pformat(text).replace("('", "'").replace("')", "'").replace(
+                        "\n ", f"\n{spaces}").replace("\\n", "\n")
+            else:
+                out = pprint.pformat(text).replace("('", "").replace("')", "").replace(
+                        "'", "").replace("\n ", f"\n{spaces}").replace("\\n\n", "\n").replace(
+                        "\\n", "\n")
+            return out
+
+        sep = '\n  '
+        if key is None:
+            text = pp(self._param_help['general']) + sep + sep.join(self)
+        else:
+            keyValue = pp(self.get(key, 'not defined'), indent=10, quote=True)
+            keyHelp = pp(self._param_help.get(key, 'not available'), indent=8)
+            text = f'{key}:\n  value: {keyValue}\n  help: {keyHelp}'
+        print(text)
+
+    _param_help = {
+        'general': 'Dictionary of parameters. Subclasses "ModelParams" and "ExperimentParams" '
+                   'are used to define the required parameters and default settings. For more '
+                   'help run ModelParams().help() or ExperimentParams().help().',
+    }
+
+
+class ModelParams(ParamDict):
     """A dictionary for LFMC model parameters
     
-    Extends the dictionary class by adding a help function. By default,
-    the dictionary is created with keys for all parameters needed to
-    build a model for LFMC estimation and initialised to the default
-    values.
+    A ParamDict sub-class that creates a dictionary with keys for all
+    parameters needed to build a model for LFMC estimation. Defaults
+    are set for the parameters if no source is provided or it has
+    missing keys.
     
     Parameters
     ----------
@@ -39,35 +172,21 @@ class ModelParams(dict):
     """
 
     def __init__(self, source=None, model_name='default_model', **blocks):
-        if source is None:    # New model - set all parameters to defaults
-            model_params = self.set_defaults(model_name)
-            super(ModelParams, self).__init__(model_params)
+        super(ModelParams, self).__init__(source)
+        if source is None:
+            self['modelName'] = model_name
             self.set_layers(**blocks)
-        else:
-            if type(source) is dict:   # Set parameters from a dictionary
-                model_params = source
-            elif type(source) is str:  # Set parameters from a JSON string
-                model_params = json.loads(source)
-            else:                      # Set parameters from a JSON input file
-                model_params = json.load(source)
-            super(ModelParams, self).__init__(model_params)
         
-    def set_defaults(self, model_name='default_model'):
+    def set_defaults(self):
         """Returns the default model parameters dictionary
         
-        Parameters
-        ----------
-        model_name : str, optional
-            The name of the model. It should be a valid Keras model
-            name. The default is 'default_model'.
-
         Returns
         -------
         model_params : dict
             The dictionary of model parameters.
         """
         model_params = {
-            'modelName': model_name,
+            'modelName': 'default_model',
             'description': '',
             'modelClass': 'LfmcModel',
             'modelDir': '',
@@ -80,6 +199,8 @@ class ModelParams(dict):
             'saveTrain': None,
             'saveValidation': True,
             'plotModel': True,
+            'multiSamples': None,
+            'deduplicate': False,
 
             'randomSeed': 1234,
             'modelSeed': 1234,
@@ -91,63 +212,67 @@ class ModelParams(dict):
             'maxWorkers': 1,
             'deterministic': False,
             'gpuDevice': 0,
+            'gpuList': [],
             'gpuMemory': 0,
 
-            # MODIS data parameters
-            'modisFilename': None,
-            'modisChannels': 7,
-            'modisNormalise': {'method': 'minMax', 'percentiles': 2},
-
-            # PRISM data parameters
-            'prismFilename': None,
-            'prismChannels': 7,
-            'prismNormalise': {'method': 'minMax', 'percentiles': 2},
-
-            # Auxiliary data parameters
-            'auxFilename': None,
-            'auxColumns': 9,
+            # Input data parameters
+            'inputs': {},
+            'samplesFile': None,
+            'samplesFilter': None,
+            'auxColumns': [],
             'auxAugment': True,
             'auxOneHotCols': [],
-            'targetColumn': 'LFMC value',
+            'targetColumn': None,
+            'targetTransform': None,
+            'targetNormalise': None,
+            'classify': False,
+            'numClasses': 0,
 
             # Data splitting parameters
             'splitMethod': None,
             'splitSizes': (0.33, 0.067),
-            'siteColumn': 'Site',
-            'splitStratify': 'Land Cover',
+            'splitColumn': None,
+            'splitStratify': None,
             'splitYear': None,
-            'yearColumn': 'Sampling year',
             'splitFolds': 0,
+            'testFolds': 1,
+            'yearColumn': None,
+            'yearFolds': None,
+            'testAllYears': False,
+            'trainAdjust': 0,
+            'testAdjust': 0,
+            
+            # Model chaining parameters
+            'parentModel': None,
+            'parentFilter': None,
+            'parentResult': False,
             
             # Keras common parameters
-            'convPadding': 'same',
+            'convPadding': 'valid',
             'poolPadding': 'valid',
 
             # Overfitting controls
-            'batchNormalise': True,
+            'batchNormalise': False,
             'dropoutRate': 0,
-            'regulariser': 'keras.regularizers.l2(1.e-6)',
+            'regulariser': None,
             'validationSet': False,
             'earlyStopping': False,
 
             # Fitting parameters
-            'epochs': 100,
+            'epochs': 1,
             'evaluateEpochs': None,
-            'batchSize': 64,
+            'batchSize': 32,
             'shuffle': True,
             'verbose': 0,
 
             # Keras methods
             'optimiser': 'adam',
-            'activation': 'relu',
+            'activation': None,
             'initialiser': 'he_normal',
-            'loss': 'mean_squared_error',
-            'metrics': ['mean_absolute_error'],
+            'loss': None,
+            'metrics': None,
         }
         return model_params
-
-    def __str__(self):
-        return pprint.pformat(self, width=100, sort_dicts=False)
 
     def set_layers(self, **kwargs):
         """Sets model layer parameters
@@ -251,71 +376,60 @@ class ModelParams(dict):
         if block_params:
             for idx, layer in enumerate(self[block_name]):
                 layer.update(block_params[idx])
+    
+    def add_input(self, name, input_params, data_type='ts'):
+        """ Adds an input to the model parameters.
+        
 
-    def save(self, file_stream=None):
-        """Saves the model parameters
-        
-        Convert the model parameters dictionary to a JSON string and
-        optionally save to a file.
-        
         Parameters
         ----------
-        file_stream : str or file handle, optional
-            Either the name of the output file, or a file handle for
-            the output file. If None, the converted JSON string is
-            returned. The default is None.
-
-        Returns
-        -------
-        str
-            The JSON representation of the model parameters. Only
-            returned if no file stream parameter specified.
-
-        """
-        if file_stream is None:               # No output file, return parameters as a JSON string
-            return json.dumps(self, indent=2)
-        elif isinstance(file_stream, str):    # File name provided, open file and save parameters
-            if not os.path.exists(self['modelDir']):
-                os.makedirs(self['modelDir'])
-            with open(os.path.join(self['modelDir'], file_stream), 'w') as f:
-                json.dump(self, f, indent=2)
-        else:                                 # File stream provided, save parameters
-            json.dump(self, file_stream, indent=2)
-
-    def help(self, key=None):
-        """Prints a help message
-        
-        Prints the general help message if no key provided, or the help
-        message for the specified key.
-        
-        Parameters
-        ----------
-        key : str, optional
-            The key for which help is requested. If None, the general
-            help message is displayed. The default is None.
+        name : str
+            Input name.
+        input_params : dict
+            Dictionary of parameters. Valid keys are:
+            'filename': Required.
+                Full path name of the file containing the data for a
+                list of file names.
+            'channels': Required for time series inputs.
+                Number of channels in the dataset.
+            'includeChannels': Optional for time series inputs.
+                A list of channels to include in the prepared data. By
+                default, all channels are included.
+            'normalise': Optional. 
+                A dictionary containing the method to use to normalise
+                the data, plus any parameters required by this method.
+            'start': Optional.
+                Time series start. The offset from the start of the
+                input time series.
+            'end': Optional.
+                Time series end. The offset from the end of the input
+                time series. "None" means no end offset.
+        data_type : str, optional
+            Input type. Specify 'ts' (the default) if the input is a
+            time series. This ensures a default value for all the time
+            series input parameters (channels/start/end) is set. If any
+            other value is specified, no defaults for these parameters
+            are set, although they may be provided in the input_params.
 
         Returns
         -------
         None.
-        """
-        def pp(text, indent=0, quote=False):
-            spaces = " " * indent
-            if quote:
-                out = pprint.pformat(text).replace("('", "'").replace("')", "'").replace(
-                        "\n ", f"\n{spaces}").replace("\\n", "\n")
-            else:
-                out = pprint.pformat(text).replace("('", "").replace("')", "").replace(
-                        "'", "").replace("\n ", f"\n{spaces}").replace("\\n", "\n")
-            return out
 
-        sep = '\n  '
-        if key is None:
-            text = pp(self._param_help['general']) + sep + sep.join(self)
-        else:
-            keyValue = pp(self.get(key, 'not defined'), indent=10, quote=True)
-            keyHelp = pp(self._param_help.get(key, 'not available'), indent=8)
-            text = f'{key}:\n  value: {keyValue}\n  help: {keyHelp}'
-        print(text)
+        """
+        all_defaults = {'filename': None, 'normalise': None,}
+        ts_defaults = {
+            'filename': None,
+            'channels': None,
+            'includeChannels': [],
+            'normalise': {'method': 'minMax', 'percentiles': 2},
+            'start': None,
+            'end': None,
+            }
+        self['inputs'][name] = deepcopy(all_defaults)
+        if data_type == 'ts':
+            self['inputs'][name].update(deepcopy(ts_defaults))
+        self['inputs'][name].update(input_params)
+
 
     _param_help = {
         'general':        'Dictionary of all parameters used to build an LFMC model. For more '
@@ -335,8 +449,9 @@ class ModelParams(dict):
                           ' are the model names and the values are a dictionary of parameters, '
                           'including the model type (best, merge, or ensemble). e.g. to create a '
                           'model called "merge10" by merging the last 10 checkpoints, set to '
-                          '"{\'merge10\': {\'type\': \'merge\', \'models\': 10}}". '
-                          'If "falsy", the standard set of derived models are created.',
+                          '"{\'merge10\': {\'type\': \'merge\', \'models\': 10}}".  If "falsy", '
+                          'no derived models are created. If "truthy" (the default), the standard '
+                          'set of derived models are created.',
         'saveModels':     'Set to True, a derived model name or a list of derived model names to '
                           'save the models in h5 format. If True the base model is saved. If '
                           '"falsy", no models are saved.',
@@ -346,6 +461,20 @@ class ModelParams(dict):
                           'is validation data, the validation statistics are always saved. '
                           'Ignored if there is no validation data.',
         'plotModel':      'Set to True (default) to create a model plot.',
+        'multiSamples':   'If the model is to be trained/evaluated on more than one set of '
+                          'training data, a list specifying the key/name for each set of samples. '
+                          'If used, each "*Filename" parameter should specify either a single '
+                          'file or a list of files the same length as "multiSamples". If the '
+                          '"*Filename" parameter is a list of files, the data loaded from each '
+                          'file will have a value from "multiSamples" prepended to each row-ID. '
+                          'If a single file, the data from the file will be replicated for each '
+                          'entry in "multiSamples". Defaults to "None", meaning a single set of '
+                          'samples is used, and if any of the "*Filename" parameters are lists, '
+                          'the data is concatenated column-wise.',
+        'deduplicate':    'Remove duplicates from the training data before training the model. '
+                          'For each set of duplicated samples, the target values are adjusted to '
+                          'be the mean of the set. Currently this can only be used if a single '
+                          'source is specified.',
         'randomSeed':     'Number used to set all random seeds (for random, numpy and tensorflow)',
         'modelRuns':      'Number of times to buid and run the model',
         'resplit':        'True: redo the test/train splits on each run; False: use the same '
@@ -355,33 +484,39 @@ class ModelParams(dict):
                           'runs will be seeded. If the list is empty (and modelRuns > 1) the '
                           'randomSeed will be used to seed the first run, all other runs will be '
                           'unseeded. Extra seeds (n > modelRuns) are ignored.',
-        'maxWorkers':     'Specifies the maximum number of workers to use. Setting this > 1 allows'
-                          ' parallel processing of folds or runs.',
-        'gpuDevice':      'Specifies which GPU device to use. Ignored if "gpuMemory" is not set or'
-                          ' set to a "falsy" value.',
-        'gpuMemory':      'Specifies the GPU memory to use for each sub-process. The Tensorflow '
+        'maxWorkers':     'Specifies the maximum number of multiprocess workers to use. Setting '
+                          'this > 1 allows parallel processing of folds or runs.',
+        'gpuDevice':      'Specifies which GPU device to use. Ignored if "gpuList" is specified.',
+        'gpuList':        'Specifies a list of GPU devices. These are assigned to the '
+                          'multiprocess workers in a round-robin manner. Each entry in the list '
+                          'can be one GPU device number (the worker will use a single GPU) or a '
+                          'list of device numbers (the worker will use all these GPUs).',
+        'gpuMemory':      'Specifies the GPU memory to use for each worker. The Tensorflow '
                           'default is used if not set or set to a "falsy" value',
-        'modisFilename':  'Full path name of the file containing the MODIS data.',
-        'modisChannels':  'Number of channels in the MODIS dataset.',
-        'modisNormalise': 'A dictionary containing the method to use to normalise the MODIS '
-                          'data, plus any parameters required by this method.',
-        'modisStart':     'MODIS timeseries start. The offset from end of the input timeseries.',
-        'modisEnd':       'MODIS timeseries end. The offset from end of the input timeseries. '
-                          'Set to "None" to specify the end of the timeseries.',
-        'prismFilename':  'Full path name of the file containing the PRISM data',
-        'prismChannels':  'Number of channels in the PRISM dataset',
-        'prismNormalise': 'A dictionary containing the method to use to normalise the PRISM '
-                          'data, plus any parameters required by this method',
-        'prismStart':     'PRISM timeseries start. The offset from end of the input timeseries. ',
-        'prismEnd':       'PRISM timeseries end. The offset from end of the input timeseries. '
-                          'Set to "None" to specify the end of the timeseries.',
-        'auxFilename':    'Full path name of the file containing the auxiliary data and target',
+        'inputs':         'A dictionary where the keys are the input names and values are '
+                          'dictionaries with these keys:\n'
+                          'filename:  Required. Full path name of the file containing the data or\n'
+                          '           a list of file names. See the "multiSamples" parameter for \n'
+                          '           how a list is handled.\n'
+                          'channels:  Required for time series inputs. Number of channels in the \n'
+                          '           dataset.\n'
+                          'normalise: Optional. A dictionary containing the method to use to \n'
+                          '           normalise the data, plus any parameters required by this\n'
+                          '           method.\n'
+                          'start:     Optional. Time series start. The offset from end of the \n'
+                          '           input timeseries.\n'
+                          'end:       Optional. Time series end. The offset from end of the input\n'
+                          '           timeseries. Set to "None" to specify the end of the timeseries.',
+        'samplesFile':    'Full path name of the file containing the auxiliary data and target or '
+                          'a list of file names. See the "multiSamples" parameter for how a list '
+                          'is handled.',
         'auxColumns':     'The columns from the auxilary dataset that should be used as the '
                           'auxiliary input to the model. Either an integer, in which case the'
                           'last auxColumns are used, or a list of the column names to use. The '
                           'columns should not include any columns to be one-hot encoded.',
         'auxAugment':     'Indicates if the auxiliary data should be augmented with the last day '
-                          'of all time series data sources.',
+                          'of the time series data sources. Valid values are "True", "False", or '
+                          'a list of data sources to use to augment the auxiliaries.',
         'auxOneHotCols':  'A list of columns in the auxiliary dataset that should be one-hot '
                           'encoded and added to the model auxiliary data. These columns should '
                           'not be included in auxColumns.'
@@ -413,6 +548,18 @@ class ModelParams(dict):
         'splitYear':      'For "byYear" splits, the first year to year as test data. For "random" '
                           'or "bySite" splits, data in the training set for this year or later is '
                           'discarded, as is data in the test set foe before this year.',
+        'trainAdjust':    'For "byYear" splits, The number of days to adjust the end date of the '
+                          'training and validation sets. E.g. "90" will remove all samples within '
+                          '90 days of the end of the training/validation sets. These samples are '
+                          'discarded (NOT added to the test set). The default is 0.',
+        'testAdjust':     'For "byYear" splits, the number of days to adjust the start and end '
+                          'dates of the test set. A postive number will shift the dates forward '
+                          'and a negative number will shift them backwards. E.g. setting'
+                          '"test_adjust" to "90", "year" to "2014" and "num_year" to "1" will '
+                          'result in a test set containing samples from "01-Apr-2014" to '
+                          '"31-Mar-2015". Samples in the adjustment period (e.g. "01-Jan-2014" to '
+                          '"31-Mar-2014") are discarded (NOT added to the training or validation '
+                          'sets). The default is 0.',
         'convPadding':    'Specifies the Keras padding value for the convolutional layers. Set to '
                           '"valid" for no padding or "same" for padding.',
         'poolPadding':    'Specifies the Keras padding value for the pooling layers. Set to '
@@ -441,4 +588,108 @@ class ModelParams(dict):
         'fc':             'A list of fully connected parameter sets, each entry in the list '
                           'corresponds to a fully connected layer that will be added to the model',
     }
+
+
+class ExperimentParams(ParamDict):
+    """A dictionary for LFMC experiment parameters
+    
+    A ParamDict sub-class that creates a dictionary with keys for all
+    parameters that (together with a set of ModelParams) are needed to
+    run an LFMC estimation experiment. Defaults are set for the
+    parameters if a source is not provided or has missing keys.
+    
+    Parameters
+    ----------
+        source : None, dict, str, or file object, optional
+          - If dict: A dictionary containing all model parameters
+          - If str: A string representation of the model parameters in
+            JSON format.
+          - If file object: An open JSON file containing all model
+            parameters.
+          - If None: The object is initialised with defaults for all
+            model parameters.
+          - The default is None.
+        experiment_name : str, optional
+            The name of the experiment. It should be a valid Keras model
+            name. The default is 'default_model'.
         
+    Attributes
+    ----------
+    _param_help: dict
+        A dictionary containing the ``help`` text for each model
+        parameter. The ``general`` key contains the ``help`` text for
+        the object.
+    """
+
+    def __init__(self, source=None, experiment_name='default_model'):
+        super(ExperimentParams, self).__init__(source)
+        if source is None:
+            self['name'] = experiment_name
+        
+    def set_defaults(self):
+        """Returns the default experiment parameters dictionary
+        
+        Returns
+        -------
+        experiment_params : dict
+            The dictionary of experiment parameters.
+        """
+        experiment_params = {
+            'name': '',
+            'description': '',
+            'blocks': {},
+            'tests': [{}],
+            'testNames': [],
+            'restart': False,
+            'rerun': [],
+            'resumeAllTests': False,
+        }
+        return experiment_params
+
+    _param_help = {
+        'general':        'Dictionary of all parameters used to run an LFMC experiment. A simple '
+                          'example of experiment parameters is:\n\n'
+                          '{"name": "Filters",\n'
+                          ' "description": "Test effect of filter sizes on conv layers",\n'
+                          ' "blocks": {\n'
+                          '     "conv": {"numLayers": 3, "poolSize": [2, 3, 4]},\n'
+                          '     "fc": {}},\n'
+                          ' "tests": [\n'
+                          '     {"testName": "Filter-8", "conv": {"filters": [8, 8, 8]}},\n'
+                          '     {"testName": "Filter-16", "conv": {"filters": [16, 16, 16]}},\n'
+                          '     {"testName": "Filter-32", "conv": {"filters": [32, 32, 32]}}],\n'
+                          ' "restart": 0}\n\n'
+                          'For more help run ExperimentParams().help("parameter").\nAvailable '
+                          'parameters are:',
+        'name':           'A name for the experiment; must be a valid directory name',
+        'description':    'A description of the experiment. Used only for documentation.',
+        'blocks':         'A dictionary where the keys are the model blocks used by the '
+                          'experiment tests and the values are the block parameters. It must '
+                          'include the blocks specified in the tests. Any other blocks are '
+                          'optional and any block parameters specified here are ignored. Each '
+                          'block parameter should be specified as a list. The first entry in the '
+                          'list will be used for the first layer in the block, etc. For each '
+                          'block, the layer parameter "numLayers" is required either here or for '
+                          'each test and specifies how many layers are required in this block.',
+        'tests':          'A list of dictionaries. Each dictionary represents a test and contains '
+                          'the changes for the test that need to be made to the experiment model '
+                          'parameters. Block parameters should be specified as a list. The first '
+                          'entry in the list will be used for the first layer in the block, etc.'
+                          'For each block, the layer parameter "numLayers" is required either '
+                          'here or on the appropriate "blocks" entry and specifies how many '
+                          'layers are required in this block.',
+        'testNames':      'A list of the test names. Optional, but if used the list should be '
+                          'the same length as "tests".',
+        'restart':        'When restarting an experiment, specifies the test number (zero-based) '
+                          'at which the experiment run should start. If "None" or "False", the '
+                          'experiment will run from the start and a check is made to ensure the '
+                          'model directory does not exist.',
+        'rerun':          'A list of the test numbers (zero-based) to re-run. If "None", "False" '
+                          'or "[]", the experiment will run from the start. Note: if both "rerun" '
+                          'and "restart" are specified (i.e. not "None", "False" or "[]"), '
+                          '"rerun" will be ignored.',
+        'resumeAllTests': 'If "True", any "restartRun" in the model parameters will be applied to '
+                          'all tests. If "False" (the default), the "restartRun" will be applied '
+                          'to the first test only.',
+    }
+                

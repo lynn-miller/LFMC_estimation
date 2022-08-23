@@ -10,6 +10,18 @@ import matplotlib.pyplot as plt
 from analysis_utils import plot_results, bias_variance
 
 
+def print_heading(text, line_char='-', line_before=False, line_after=True,
+                  blank_before=0, blank_after=1, indent=0):
+    print_list = [''] * blank_before
+    if line_before:
+        print_list.append(''.join([' ' * indent, line_char * len(text)]))
+    print_list.append(''.join([' ' * indent, text]))
+    if line_after:
+        print_list.append(''.join([' ' * indent, line_char * len(text)]))
+    print_list.extend([''] * blank_after)
+    print('\n'.join(print_list))
+
+
 def display_frames(frames, captions=None, precision=3, separator="\xa0" * 10):
     """Displays a list of dataframes.
     
@@ -240,6 +252,7 @@ def display_bias_variance(model, tests, num_runs, source, all_tests=False, headi
     df = bias_variance(model, tests, num_runs, source, all_tests=False)
     if heading is None:
         heading = f"Model: {model}"
-    print("\n" + heading)
-    print("-" * len(heading))
+#    print("\n" + heading)
+#    print("-" * len(heading))
+    print_heading(heading, blank_before=1, blank_after=0)
     display_frames([df], precision=precision)

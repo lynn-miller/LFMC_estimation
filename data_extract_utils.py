@@ -1,13 +1,13 @@
 """Data extraction utilities."""
 
-import gdal
 import numpy as np
 import pandas as pd
 import re
 from datetime import datetime
 from datetime import timedelta
+from osgeo import gdal
 
-from model_utils import normalise
+from data_prep_utils import normalise
 
 
 def get_sample_data(date_str, site_data, ts_offset=1, ts_length=365, ts_freq=1):
@@ -106,6 +106,10 @@ def extract_timeseries_data(extractor, sites, samples, earliest_sample_date,
             site_data = extractor.get_and_save_data(site)
         except:
             print(f'Failed to extract data for {site.Site}')
+            invalid_sites.append(site.Site)
+            continue
+        if site_data.notna().sum().sum() == 0:
+            print(f'No data found for {site.Site}')
             invalid_sites.append(site.Site)
             continue
         for index, sample in site_samples.iterrows():
@@ -262,17 +266,19 @@ def normalise_dem(data,
     """
     dem_norm = data[input_columns].round(precision)
     longitude = normalise(
-        data[input_columns[0]], method='range', range=(-180, 180), out_range=(-np.pi, np.pi))
+        data[input_columns[0]], method='range', data_range=(-180, 180),
+        scaled_range=(-np.pi, np.pi))
     dem_norm["Long_sin"] = longitude.transform(np.sin).round(precision)
     dem_norm["Long_cos"] = longitude.transform(np.cos).round(precision)
     dem_norm["Lat_norm"] = normalise(
-        data[input_columns[1]], method='range', range=(-90, 90)).round(precision)
+        data[input_columns[1]], method='range', data_range=(-90, 90)).round(precision)
     dem_norm["Elevation"] = normalise(
-        data[input_columns[2]], method='range', range=(0, 6000)).round(precision)
+        data[input_columns[2]], method='range', data_range=(0, 6000)).round(precision)
     dem_norm["Slope"] = normalise(
-        data[input_columns[3]], method='range', range=(0, 90)).round(precision)
+        data[input_columns[3]], method='range', data_range=(0, 90)).round(precision)
     aspect = normalise(
-        data[input_columns[4]], method='range', range=(0, 360), out_range=(-np.pi, np.pi))
+        data[input_columns[4]], method='range', data_range=(0, 360),
+        scaled_range=(-np.pi, np.pi))
     dem_norm["Aspect_sin"] = aspect.transform(np.sin).round(precision)
     dem_norm["Aspect_cos"] = aspect.transform(np.cos).round(precision)
     return dem_norm

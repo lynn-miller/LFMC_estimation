@@ -2,6 +2,8 @@
 import numpy as np
 import pandas as pd
 
+from collections import defaultdict
+
 import matplotlib.pyplot as plt
 
 from scipy import stats
@@ -168,17 +170,19 @@ def plot_results(fig_name, y, yhat, top_text=None, bottom_text=None,
         return fig
 
 
-def calc_statistics(y, yhat, ybar=None, precision=2):
+def calc_statistics(y, yhat, metrics=None, ybar=None, precision=2):
     """Calculate model evaluation statistics
     
-    Calculates the following statistics:
+    Calculates the following metrics:
       - Bias: The difference between the mean prediction and the mean
         label
       - RMSE: The root mean squared error of the predictions
+      - RMSPE: the root mean squared proportionate error of the predictions
       - ubRMSE (Unbiased RMSE): The RMSE obtained if each prediction is
         adjusted by the Bias
       - R: The correlation coefficient
       - R2 (R-squared): The percent of variance explained
+      - Count: The number of y (and yhat) values provided
 
     Parameters
     ----------
@@ -186,6 +190,11 @@ def calc_statistics(y, yhat, ybar=None, precision=2):
         The sample labels.
     yhat : array
         The sample predictions.
+    metrics : list, optional
+        The list of metrics required. The metric names should be a
+        case-insensitive subset of the list above. If ``None``, the
+        list ``['Count', 'RMSE', 'R2', 'Bias']`` is used. The default
+        is None.
     ybar : int or float
         The sample mean. If None, ybar = y.mean(). The default is None.
         Specifying ybar allows calculation of R2 for a sub-sample using
@@ -198,23 +207,82 @@ def calc_statistics(y, yhat, ybar=None, precision=2):
     Returns
     -------
     dict
-        The calculated statistics.
+        The calculated statistics. Keys are the metrics names in the
+        same case as specified in the ``metrics`` parameter. 
 
     """
-    bias = np.mean(yhat) - np.mean(y)
-    bias = np.round(bias, precision)
-    rmse = np.sqrt(np.mean(np.square(yhat - y)))
-    rmse = np.round(rmse, precision)
-    r = np.corrcoef(y, yhat)
-    r = np.round(r[0, 1], precision)
-    if ybar is None:
-        r2 = r2_score(y, yhat)
+    def calc_bias():
+        bias = np.mean(yhat) - np.mean(y)
+        return np.round(bias, precision)
+    def calc_rmse():
+        rmse = np.sqrt(np.mean(np.square(yhat - y)))
+        return np.round(rmse, precision)
+    def calc_rmspe():
+        rmspe = np.sqrt(np.mean(np.square((yhat - y) / y)))
+        return np.round(rmspe, precision)
+    def calc_r():
+        r = np.corrcoef(y, yhat)
+        return np.round(r[0, 1], precision)
+    def calc_r2():
+        if ybar is None:
+            r2 = r2_score(y, yhat)
+        else:
+            r2 = 1 - (((yhat - y) ** 2).sum() / ((y - ybar) ** 2).sum())
+        return np.round(r2, precision)
+    def calc_ubrmse():
+        bias = calc_bias()
+        ubrmse = np.sqrt(np.mean(np.square(yhat - y - bias)))
+        return np.round(ubrmse, precision)
+    def calc_count():
+        return y.shape[0]
+
+    default_metrics = ['Count', 'RMSE', 'R2', 'Bias']
+    functions = {'rmse': calc_rmse, 'rmspe': calc_rmspe, 'ubrmse': calc_ubrmse, 'bias': calc_bias,
+                 'r': calc_r, 'r2': calc_r2, 'count': calc_count}
+    if metrics is None:
+        metrics = default_metrics
+    elif isinstance(metrics, str) and metrics.lower() == 'all':
+        metrics = list(functions.keys())
+    try:
+        {m: functions[m.lower()] for m in metrics}
+    except:
+        raise ValueError(f"Calc_statistics: {metrics} does not define a valid set of metrics") from None
+    stats_ = {m: functions[m.lower()]() for m in metrics}
+    return stats_
+
+
+def grouped_results(samples, predicts, grouping_column, target_column, test_list,
+                    keys=None, measures='RMSE'):
+    temp_results = defaultdict(list)
+    if keys is None:
+        keys = np.sort(samples[grouping_column].unique())
+    if isinstance(predicts[0], list):
+        predicts = [item for sublist in predicts for item in sublist]
+    for test_preds in predicts:
+        for key in keys:
+            temp_samples = samples[samples[grouping_column] == key]
+            temp_index = temp_samples.index.intersection(test_preds.index)
+            if temp_index.size > 0:
+                temp_predicts = test_preds.reindex(temp_index)
+                temp_samples = temp_samples[target_column].reindex(temp_index)
+                temp_stats = [calc_statistics(temp_samples, pred[1])
+                              for pred in temp_predicts.iteritems()]
+                temp_stats = pd.DataFrame(temp_stats).mean()
+            else:
+                temp_stats = None #pd.Series({'RMSE': None})
+            temp_results[key].append(temp_stats)
+
+    temp_df = pd.concat([pd.DataFrame(temp_results[key], index=test_list) for key in keys],
+                        axis=1, keys=keys)
+    results = {}
+    if measures is None:
+        measures = temp_df.columns.get_level_values(1).unique().to_list()
+    if isinstance(measures, list):
+        for s in measures:
+            results[s] = temp_df.xs(s, axis=1, level=1).sort_index(axis=1)
     else:
-        r2 = 1 - (((yhat - y) ** 2).sum() / ((y - ybar) ** 2).sum())
-    r2 = np.round(r2, precision)
-    ubrmse = np.sqrt(np.mean(np.square(yhat - y - bias)))
-    ubrmse = np.round(ubrmse, precision)
-    return {'Bias': bias, 'R':r, 'R2':r2, 'RMSE': rmse, 'ubRMSE': ubrmse}
+        results = temp_df.xs(measures, axis=1, level=1).sort_index(axis=1)
+    return results                
 
 
 def bias_variance(model, tests, num_runs, source, all_tests=False):

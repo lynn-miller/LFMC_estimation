@@ -1,13 +1,13 @@
 """Time Series Extractor class"""
 
 import ee
-import gdal
 import glob
 import numpy as np
 import os
 import pandas as pd
 import re
 import time
+from osgeo import gdal
 
 
 class TimeseriesExtractor:

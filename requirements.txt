@@ -1,6 +1,6 @@
 cudatoolkit=10.1.243
 cudnn=7.6.5=cuda10.1_0
-earthengine-api=0.1.298
+earthengine-api=0.1.307
 gdal=3.0.2
 ipykernel=6.4.1
 jupyter=1.0.0
