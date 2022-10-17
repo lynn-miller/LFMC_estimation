@@ -354,13 +354,13 @@ def prepare_data(model_params, samples=None, X={}, predict=False):
             if channels > 0:
                 temp_X[input_name] = prepare_ts_data(
                     model_params, input_params, input_data, predict)
-                if (augment is True) or (isinstance(augment, list) and input_name in augment):
-                    temp_aux = np.concatenate(
-                        [temp_aux, temp_X[input_name][:, -1, :]], axis=1)
-                elif isinstance(augment, dict) and input_name in augment.keys():
-                    offset = augment[input_name] or 1
-                    temp_aux = np.concatenate(
-                        [temp_aux, temp_X[input_name][:, -offset, :]], axis=1)
+                # if (augment is True) or (isinstance(augment, list) and input_name in augment):
+                #     temp_aux = np.concatenate(
+                #         [temp_aux, temp_X[input_name][:, -1, :]], axis=1)
+                # elif isinstance(augment, dict) and input_name in augment.keys():
+                #     offset = augment[input_name] or 1
+                #     temp_aux = np.concatenate(
+                #         [temp_aux, temp_X[input_name][:, -offset, :]], axis=1)
             else:
                 input_data = np.array(input_data)
                 temp_X[input_name] = input_data

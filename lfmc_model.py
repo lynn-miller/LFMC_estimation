@@ -461,6 +461,15 @@ class LfmcModel():
             'history' - the loss and metrics at all checkpoints
             'runTime' - the training time in seconds
         """
+        if self.params['diagnostics']:
+            for i, x in Xtrain.items():
+                print(f'{i} input shape: {x.shape}')
+                print(f'{i} data: {x[10].round(3)}')
+            print(f'Target shape: {ytrain.shape}')
+            print(f'Target data: {ytrain[:100].round(2)}')
+            print('Batch size: ', self.params['batchSize'])
+            print('Epochs: ', self.next_epoch, self.last_epoch)
+
         Xtrain = self._inputs_to_list(Xtrain)
         Xval = self._inputs_to_list(Xval)
         start_train_time = time.time()

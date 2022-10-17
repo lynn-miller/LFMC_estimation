@@ -630,6 +630,21 @@ def train_test_model(model_params, train, val, test):
         if test_data['y'] is not None:
             test_data['y'] = normalise(test_data['y'], **normal)
 
+    def augment_data(train_data, val_data, test_data, model_params):
+        aug = model_params['auxAugment']
+        if not aug:
+            return
+        for input_ in [train_data, val_data, test_data]:
+            for input_name, input_data in input_['X'].items():
+                if (input_data is not None) and (len(input_data.shape) == 3):
+                    if (aug is True) or (isinstance(aug, list) and input_name in aug):
+                        input_['X']['aux'] = np.concatenate(
+                            [input_['X']['aux'], input_data[:, -1, :]], axis=1)
+                    elif isinstance(aug, dict) and input_name in aug.keys():
+                        offset = aug[input_name] or 1
+                        input_['X']['aux'] = np.concatenate(
+                            [input_['X']['aux'], input_data[:, -offset, :]], axis=1)
+            
     gpu = getattr(train_test_model, 'gpu', None)
     if isinstance(gpu, (int, list)):
         model_params['gpuDevice'] = gpu
@@ -640,6 +655,7 @@ def train_test_model(model_params, train, val, test):
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     normalise_data(train, val, test, model_params)
+    augment_data(train, val, test, model_params)
     model = import_model_class(model_params['modelClass'])(model_params, inputs=train['X'])
     
     if model_params['plotModel']:
