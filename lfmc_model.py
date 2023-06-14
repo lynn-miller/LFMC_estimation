@@ -15,8 +15,59 @@ import time
 
 from model_parameters import ModelParams
 from analysis_utils import calc_statistics, plot_results
+from tf_custom import import_transfer_method
+import tf_custom as custom
 
 
+def set_gpus(gpus):
+    if isinstance(gpus, list):
+        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join([str(g) for g in gpus])
+    elif gpus is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpus)
+
+
+def sort_file_list(file_list, basename_prefix):
+    return sorted(
+        file_list,
+        key=lambda x: int(os.path.splitext(x)[0].rsplit(basename_prefix, 1)[1] or 0)
+        )
+
+
+def load_files(model, dir_name, file_type, attr_name=None, multi_source=False):
+    try:
+        attr_name = attr_name or file_type
+        stats_file = os.path.join(dir_name, f'{file_type}_stats.csv')
+        setattr(model, f'{attr_name}_stats', pd.read_csv(stats_file, index_col=0))
+        pred_index = (0,1) if multi_source else 0
+        pred_file = os.path.join(dir_name, f'{file_type}_predicts.csv')
+        setattr(model, f'{attr_name}_predicts', pd.read_csv(pred_file, index_col=pred_index))
+    except:
+        pass
+
+    
+def load_epoch_files(model, model_dir, file_type, attr_name=None, multi_source=False):
+    attr_name = attr_name or file_type
+    stats_attr = {}
+    preds_attr = {}
+    epoch_dirs = glob.glob(os.path.join(model_dir, 'epoch*'))
+    epoch_dirs = [epoch for epoch in epoch_dirs if os.path.isdir(epoch)]
+    epoch_dirs = sort_file_list(epoch_dirs, 'epoch')
+    for epoch_dir in epoch_dirs:
+        epoch = os.path.basename(epoch_dir)
+        try:
+            stats_file = os.path.join(epoch_dir, f'{file_type}_stats.csv')
+            stats_attr[epoch] = pd.read_csv(stats_file, index_col=0)
+            pred_index = (0,1) if multi_source else 0
+            pred_file = os.path.join(epoch_dir, f'{file_type}_predicts.csv')
+            preds_attr[epoch] = pd.read_csv(pred_file, index_col=pred_index)
+        except:
+            pass
+    if len(stats_attr) > 0:
+        setattr(model, f'epoch_{attr_name}_stats', stats_attr)
+    if len(preds_attr) > 0:
+        setattr(model, f'epoch_{attr_name}_predicts', preds_attr)
+
+        
 def import_model_class(model_class):
     """Imports an LFMC model class
     
@@ -45,20 +96,27 @@ def load_model(model_dir, epoch=None):
         raise FileNotFoundError(f'Model parameters missing: {model_file}')
     model_class = model_params.get('modelClass', 'LfmcModel')
     model = import_model_class(model_class)()
-#    model.load(os.path.join(model_dir, ''))
     model.load(model_dir)
+    multi_source = model_params.get('sourceNames', None)
     if epoch is None:
         dir_name = model_dir
+        if model_params['evaluateEpochs']:
+            for test_name in ['test', 'val', 'train']:
+                load_epoch_files(model, model_dir, test_name, multi_source=multi_source)
+                load_epoch_files(model, model_dir, f'fold_{test_name}', multi_source=multi_source)
+            
     else:
         dir_name = os.path.join(model_dir, f'epoch{epoch}')
-        model.model_dir = dir_name
-        model.params['modelDir'] = dir_name
-        model.params['epochs'] = epoch
-    try:
-        model.all_stats = pd.read_csv(os.path.join(dir_name, 'predict_stats.csv'), index_col=0)
-        model.all_results = pd.read_csv(os.path.join(dir_name, 'predictions.csv'), index_col=0)
-    except:
-        pass
+        if os.path.exists(dir_name):
+            model.model_dir = dir_name
+            model.params['modelDir'] = dir_name
+            model.params['epochs'] = epoch
+        else:
+            dir_name = model_dir
+
+    for test_name in ['test', 'val', 'train']:
+        load_files(model, dir_name, test_name, multi_source=multi_source)
+        load_files(model, dir_name, f'fold_{test_name}', multi_source=multi_source)
     return model
 
 
@@ -92,8 +150,8 @@ class LfmcModel():
     monitor: str
         Indicates if the callbacks should monitor the training loss
         (``loss``) or validation loss (``val_loss``). Set to ``val_loss``
-        if a validation set is used (i.e. ``params['validationSet']``
-        is ``True``), else set to ``loss``.
+        if a validation set is used (i.e. ``params['valSize']`` > 0),
+        else set to ``loss``.
     
     model_dir: str
         The directory where model outputs will be stored. Identical to
@@ -125,27 +183,26 @@ class LfmcModel():
     
     def __init__(self, params=None, inputs=None):
         if params is not None:
-            self.params = params
-            self.model_dir = params['modelDir']
-            self.monitor = 'val_loss' if params['validationSet'] else 'loss'
-            self._set_random_seeds()
-            self._make_temp_dir()
-            self._config_gpus()
-            self.params.save('model_params.json')
+            self._setup(params)
         self.derived_models = {}
         self.train_time = 0
         self.build_time = 0
+        self.losses = None
+        self.loss_weights = None
         if inputs is not None:
-            start_train_time = time.time()
-            if self.params is None:
-                raise ValueError('Model parameters must be specified to build model')
-            self.build(inputs)
-            self.compile()
-            self.set_callbacks()
-            self.build_time = round(time.time() - start_train_time, 2)
-            # if self.params['plotModel']:
-            #     self.plot(file_name='model_plot.png')
-        
+            self.build_and_compile(inputs)
+
+    def _setup(self, params):        
+        self.params = params
+        self.model_dir = params['modelDir']
+        self.monitor = 'val_loss' if params['valSize'] else 'loss'
+        self._set_random_seeds()
+#        tf.debugging.set_log_device_placement(True)
+        self._make_temp_dir()
+        self._config_gpus()
+        if params.get('saveFiles', True):
+            self.params.save('model_params.json')
+
     def _set_random_seeds(self):
         seed = self.params.get('modelSeed', self.params['randomSeed'])
         os.environ['PYTHONHASHSEED'] = str(seed)
@@ -165,37 +222,46 @@ class LfmcModel():
                 pass
 
     def _config_gpus(self):
+        self.strategy = None
         if self.params['deterministic']:
             # Currently the only way to ensure a fully deterministic run is to disable GPU usage
             os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
         else:  # only configure GPUs if a non-deterministic run is ok
-            gpus = tf.config.list_physical_devices('GPU')
-            device_nums = self.params.get('gpuDevice', 0)
+            os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
+            if self.params['mixedPrecision']:
+                keras.mixed_precision.set_global_policy(self.params['mixedPrecision'])
             gpu_memory = self.params.get('gpuMemory', 0)
-            if gpus and device_nums is not None:
-                if isinstance(device_nums, int):
-                    gpu_devices = [gpus[device_nums]]
-                else:
-                    gpu_devices = [gpus[num] for num in device_nums]
-                tf.config.set_visible_devices(gpu_devices, 'GPU')
-                if gpu_memory:
-                    mem_config = tf.config.LogicalDeviceConfiguration(memory_limit=gpu_memory)
-                    for device in gpu_devices:
-                        tf.config.set_logical_device_configuration(device, [mem_config])
+            gpus = tf.config.list_physical_devices('GPU')
+            if gpu_memory:
+                mem_config = tf.config.LogicalDeviceConfiguration(memory_limit=gpu_memory)
+                for device in gpus: #gpu_devices:
+                    tf.config.set_logical_device_configuration(device, [mem_config])
         
     def _inputs_to_list(self, inputs, build=False):
-        parent_source = 'parent'
+        ps = 'parent'
         sources = self.params['dataSources'].copy()
-        if parent_source in self.input_list and parent_source in inputs.keys():
-            sources.append(parent_source)
+        if ps in self.input_list and ps in inputs.keys() and ps not in sources:
+            sources.append(ps)
         if build:
             return [keras.Input(inputs[source].shape[1:], name=source)
                     for source in self.input_list]
         else:
             return [inputs[source] for source in sources]
+    
+    def _targets_to_list(self, targets):
+        if targets is None:
+            return targets
+        elif (targets.ndim == 2) and self.params['multiTarget']:
+            if self.params['diagnostics']:
+                print('Converting target to list')
+            return [x for y, x in targets.items()]
+        else:
+            if self.params['diagnostics']:
+                print(f'Target shape is: {targets.shape}')
+            return targets
 
     def _build_inputs(self, inputs):
-        parent_source = 'parent'
+        ps = 'parent'
         if self.params['dataSources'] == []:
             self.params['dataSources'] = self.input_list
         elif not set(self.params['dataSources']).issubset(self.input_list):
@@ -204,9 +270,9 @@ class LfmcModel():
         build_data = {}
         for source in self.params['dataSources']:   # self.input_list:
             build_data[source] = keras.Input(inputs[source].shape[1:], name=source)
-        if parent_source in self.input_list and parent_source in inputs.keys():
-            parent_size = inputs[parent_source].shape[1:]
-            build_data[parent_source] = keras.Input(parent_size, name=parent_source)
+        if ps in self.input_list and ps in inputs.keys() and ps not in self.params['dataSources']:
+            parent_size = inputs[ps].shape[1:]
+            build_data[ps] = keras.Input(parent_size, name=ps)
         return build_data
 
     def _merge_inputs(self, inputs, merge_function):
@@ -221,16 +287,17 @@ class LfmcModel():
         else:
             return None
         
-    def _eval_param(self, param, starts_with='keras'):
+    def _eval_param(self, param, starts_with=['keras']):
         """Evaluates a string as code
     
-        If ``param`` is prefixed with ``starts_with``, it is assumed to
-        be code and evaluated. Other strings are returned unchanged.
+        If ``param`` is prefixed with ``starts_with`` or one of the
+        elements in ``starts_with`` (if a list), it is assumed to be
+        code and evaluated. Other strings are returned unchanged.
         
         If model parameters are set as keras classes or functions, they
         cannot be converted to JSON and stored. Setting the model
         parameter to a string of the function call allows the full set
-        of model parameters to be stored in as text, while allowing
+        of model parameters to be stored as text, while allowing
         specification of any valid parameter.
         
         Note
@@ -242,9 +309,9 @@ class LfmcModel():
         ----------
         param : str or object
             The string to evaluate. Not evaluated, if not a string.
-        starts_with : str, optional
-            Only evaluate strings prefixed by this string. The default
-            is 'keras'.
+        starts_with : str or list, optional
+            Only evaluate strings prefixed by this string (if str), or
+            by one of the strings in the list. The default is ['keras'].
     
         Returns
         -------
@@ -253,9 +320,11 @@ class LfmcModel():
             string or does not start with ``starts_with``, ``param`` is
             returned unchanged.
         """
-        if type(param) is not str:
+        if not isinstance(param, str):
             return param
-        if param.startswith(starts_with):
+        if not isinstance(starts_with, list):
+            starts_with = [starts_with]
+        if any([param.startswith(s) for s in starts_with]):
             return eval(param)
         else:
             return param
@@ -362,7 +431,7 @@ class LfmcModel():
             return None
         x = input_
         short_name = block_name.replace('Conv', '')
-        for i, block_params in enumerate(self.params.get(block_name, [])):
+        for i, block_params in enumerate(self.params['blocks'].get(block_name, [])):
             for layer in block_func(f'{short_name}{i}', block_params):
                 x = layer(x)
         return x
@@ -386,10 +455,16 @@ class LfmcModel():
                                activation=act)(x)
         return x
     
+    def get(self):
+        return self
+    
+    def ready(self):
+        return True
+    
     def build(self, inputs):
         raise NotImplementedError
 
-    def compile(self):
+    def compile(self, steps_per_execution=None):
         """Compiles the model
         
         Compiles the model using the optimizer, loss function and
@@ -399,10 +474,39 @@ class LfmcModel():
         -------
         None.
         """
+        metrics = [self._eval_param(metric, ['keras', 'custom'])
+                   for metric in self.params['metrics']]
+        if self.losses is None:
+            self.losses = self._eval_param(self.params['loss'], ['keras', 'custom'])
+        steps_per_execution = steps_per_execution or self.params['stepsPerExec']
         self.model.compile(optimizer=self._eval_param(self.params['optimiser']),
-                           loss=self.params['loss'],
-                           metrics=self.params['metrics'])
+                           loss=self.losses,
+                           loss_weights=self.loss_weights,
+                           metrics=metrics,
+                           steps_per_execution=steps_per_execution,
+                           jit_compile=self.params['enableXla'])
+
+    def build_and_compile(self, inputs, compile_only=False, load_weights=False):
+        start_build_time = time.time()
+        if self.params is None:
+            raise ValueError('Model parameters must be specified to build model')
+        if not compile_only:
+            self.build(inputs)
+        if load_weights:
+            pretrained_model = os.path.join(self.params['pretrainedModel'], 'base.h5')
+            self.model.load_weights(pretrained_model, by_name=True)
+        self.compile()
         self.next_epoch = 0
+        self.set_callbacks()
+        self.build_time = round(time.time() - start_build_time, 2)
+
+    def transfer(self, *args, **kwargs):
+        xfer = self.params['transferModel']
+        if xfer:
+            if xfer.get('preTransfer', False):
+                import_transfer_method(xfer['preTransfer'])(self, *args, pre_transfer=True, **kwargs)
+            if xfer.get('method', None):
+                import_transfer_method(xfer['method'])(self, *args, **kwargs)
 
     def set_callbacks(self):
         """Creates a list of the model callbacks.
@@ -416,16 +520,19 @@ class LfmcModel():
         -------
         None.
         """
-        checkpoint_path = os.path.join(self.temp_dir, '_{epoch:04d}_temp.h5')
-        checkpoint = keras.callbacks.ModelCheckpoint(
-                checkpoint_path,
-                monitor=self.monitor,
-                verbose=self.params['verbose'],
-                save_best_only=False,
-                save_weights_only=False,
-                mode='min',
-                save_freq='epoch')
-        self.callback_list = [checkpoint]
+        if self.params['checkpoint']:
+            checkpoint_path = os.path.join(self.temp_dir, '_{epoch:04d}_temp.h5')
+            checkpoint = keras.callbacks.ModelCheckpoint(
+                    checkpoint_path,
+                    monitor=self.monitor,
+                    verbose=self.params['verbose'],
+                    save_best_only=False,
+                    save_weights_only=False,
+                    mode='min',
+                    save_freq='epoch')
+            self.callback_list = [checkpoint]
+        else:
+            self.callback_list = []
         if self.params['earlyStopping'] > 1:
             early_stop = keras.callbacks.EarlyStopping(
                     monitor=self.monitor,
@@ -434,8 +541,17 @@ class LfmcModel():
                     verbose=self.params['verbose'],
                     mode='auto')
             self.callback_list.append(early_stop)
+        if self.params['tensorBoard']:
+            if isinstance(self.params['tensorBoard'], dict):
+                kwargs = self.params['tensorBoard']
+            else:
+                kwargs = None
+            tensor_board = keras.callbacks.TensorBoard(
+                log_dir=self.model_dir, histogram_freq=1, **kwargs)
+            self.callback_list.append(tensor_board)
+            
 
-    def train(self, Xtrain, ytrain, Xval=None, yval=None):
+    def train(self, Xtrain, ytrain, Xval=None, yval=None, weights=None):
         """Trains the model
         
         Parameters
@@ -447,11 +563,10 @@ class LfmcModel():
             The training labels.
         Xval : dict, optional
             The validation features in the same format as Xtrain. The
-            default is None. Ignored if the model params has
-            validationSet = False.
+            default is None. Ignored if model params has valSize = 0.
         yval : TYPE, optional
             The validation labels. The default is None. Ignored if the
-            model params has validationSet = False.
+            model params has valSize = 0.
 
         Returns
         -------
@@ -472,31 +587,36 @@ class LfmcModel():
 
         Xtrain = self._inputs_to_list(Xtrain)
         Xval = self._inputs_to_list(Xval)
+        ytrain = self._targets_to_list(ytrain)
+        yval = self._targets_to_list(yval)
+        
         start_train_time = time.time()
-        if self.params['validationSet']:
-            hist = self.model.fit(x=Xtrain, y=ytrain, epochs=self.last_epoch,
-                    initial_epoch = self.next_epoch, batch_size=self.params['batchSize'],
-                    shuffle=self.params['shuffle'], verbose=self.params['verbose'],
-                    callbacks=self.callback_list, validation_data=(Xval, yval))
+        if self.params['valSize']:
+            hist = self.model.fit(x=Xtrain, y=ytrain, sample_weight=weights,
+                    epochs=self.last_epoch, initial_epoch = self.next_epoch,
+                    batch_size=self.params['batchSize'], shuffle=self.params['shuffle'],
+                    verbose=self.params['verbose'], callbacks=self.callback_list,
+                    validation_data=(Xval, yval))
         else:
-            hist = self.model.fit(x=Xtrain, y=ytrain, epochs=self.last_epoch,
-                    initial_epoch = self.next_epoch, batch_size=self.params['batchSize'],
-                    shuffle=self.params['shuffle'], verbose=self.params['verbose'],
-                    callbacks=self.callback_list)
+            hist = self.model.fit(x=Xtrain, y=ytrain, sample_weight=weights,
+                    epochs=self.last_epoch, initial_epoch = self.next_epoch,
+                    batch_size=self.params['batchSize'], shuffle=self.params['shuffle'],
+                    verbose=self.params['verbose'], callbacks=self.callback_list)
         self.train_time += round(time.time() - start_train_time, 2)
         if self.next_epoch:
-            self.history = self.history.append(pd.DataFrame(hist.history), ignore_index=True)
+            self.history = pd.concat([self.history, pd.DataFrame(hist.history)], ignore_index=True)
         else:
             self.history = pd.DataFrame(hist.history)
         self.history.set_index(self.history.index + 1, inplace=True)
         self.next_epoch = self.last_epoch
-        if self.params['saveTrain']:
+        if self.params['saveTrain'] and (self.last_epoch == self.params['epochs']):
             self.save_hist()
         return {'minLoss': np.min(hist.history[self.monitor]),
                 'history': hist.history,
                 'runTime': self.train_time}
 
-    def predict(self, X, model_name='base', ensemble=np.mean, batch_size=1024, verbose=0):
+    def predict(self, X, model_name='base', ensemble=np.mean, batch_size=1024, verbose=0,
+                get_aux=False):
         """Predicts labels from a model
         
         Parameters
@@ -526,10 +646,27 @@ class LfmcModel():
             yhat = [m.predict(X, batch_size=batch_size, verbose=verbose) for m in model]
             yhat = ensemble(np.hstack(yhat), axis=1)
         else:
-            yhat = model.predict(X, batch_size=batch_size, verbose=verbose).flatten()
-        return yhat
+            yhat = model.predict(X, batch_size=batch_size, verbose=verbose)
+            if isinstance(yhat, tuple):
+                aux = yhat[1:]
+                yhat = yhat[0]
+            else:
+                aux = []
+            if self.params['classify'] and (self.params['numClasses'] > 2):
+                yhat = yhat.argmax(axis=1)
+            else:
+                yhat = yhat.flatten()
+            if verbose:
+                print(yhat)
+                for n_, y_ in enumerate(aux):
+                    print(f'Auxiliary predictions {n_}: {aux}')
+        if get_aux:
+            return yhat, aux
+        else:
+            return yhat
 
-    def evaluate(self, X, y, model_name='base', fig_name=None, ensemble=np.mean, plot=True):
+    def evaluate(self, X, y, model_name='base', ensemble=np.mean, get_stats=True,
+                 plot=True, fig_name=None):
         """Evaluates the model
         
         Evaluate the model using X as the test data and y as the labels
@@ -547,9 +684,15 @@ class LfmcModel():
         ensemble : function, optional
             The function to use if the model is an ensemble. The
             default is np.mean.
+        get_stats : bool, optional
+            Flag indicating if prediction statistics should be
+            calculated. The default is True.
         plot : bool, optional
             Flag indicating if a scatter plot of the results should be
             created. The default is True.
+        fig_name : str, optional
+            Name for the plot figure. If none, the model name is used.
+            The default is None.
 
         Returns
         -------
@@ -561,15 +704,27 @@ class LfmcModel():
               - 'runTime' - the prediction time in seconds
         """
         start_test_time = time.time()
-        yhat = self.predict(X, model_name=model_name, ensemble=ensemble)
+        if len(y) == 0:
+            yhat = np.array([])
+            aux = []
+        else:
+            yhat, aux = self.predict(X, model_name=model_name, ensemble=ensemble,
+                                     verbose=self.params['verbose'], get_aux=True)
         test_time = round(time.time() - start_test_time, 2)
-        stats = calc_statistics(y, yhat)
+        if get_stats:
+            if (y.ndim == 2) and self.params['multiTarget']:
+                y = self._targets_to_list(y)
+                y = y[0]
+                yhat = yhat[0]
+            stats = calc_statistics(y, yhat, classify=self.params['classify'])
+        else:
+            stats = None
         if plot:
             if fig_name is None:
                 fig_name = 'base' if model_name is None else model_name
             fig = plot_results(f'{fig_name} Results', y, yhat, stats)
             fig.savefig(os.path.join(self.model_dir, fig_name + '.png'), dpi=300)
-        return {'predict': yhat, 'stats': stats, 'runTime': test_time}
+        return {'predict': yhat, 'auxPredicts': aux, 'stats': stats, 'runTime': test_time}
 
     def summary(self):
         """Prints the model summary.
@@ -635,13 +790,22 @@ class LfmcModel():
         """
         self.model_dir = model_dir # os.path.join(model_dir, '')  # add separator if necessary
         with open(os.path.join(model_dir, 'model_params.json'), 'r') as f:
-            self.params = ModelParams(source = f)
-        self.monitor = 'val_loss' if self.params['validationSet'] else 'loss'
+            self.params = ModelParams(source=f)
+        self.derived_models = {}
+        self.train_time = 0
+        self.build_time = 0
+        self.monitor = 'val_loss' if self.params['valSize'] else 'loss'
         try:
             self.history = pd.read_csv(os.path.join(model_dir, 'train_history.csv'))
             self.history.set_index(self.history.index + 1, inplace=True)
         except:
             self.history = pd.DataFrame()
+            
+    def setup_finetune(self, params, inputs=None, target_size=0, source_size=0):
+        self._setup(params)
+        self.build_and_compile(inputs=inputs, load_weights=True)
+        if params.get('transferModel'):
+            self.transfer(target_size, source_size)
 
     def save_hist(self):
         """Saves the model history
@@ -680,7 +844,7 @@ class LfmcModel():
         else:
             self.derived_models[model_name] = saved_model
         
-    def save_to_disk(self, model_name=None, model_list=[]):
+    def save_to_disk(self, model_name=None, model_list=[], prefix=''):
         """Saves models to disk
         
         Saves the specified model or models to disk. If neither
@@ -701,19 +865,20 @@ class LfmcModel():
         if not(model_name or model_list):
             model_list = ['base'] + list(self.derived_models.keys())
         for mn in model_list or [model_name]:
+            save_name = '_'.join([prefix, mn]) if prefix else mn
             if mn == 'base':
-                self.model.save(os.path.join(self.model_dir, 'base.h5'))
+                self.model.save(os.path.join(self.model_dir, f'{save_name}.h5'))
             else:
                 model_ = self.derived_models[mn]
                 if type(model_) is list:
-                    save_dir = os.path.join(self.model_dir, mn)
+                    save_dir = os.path.join(self.model_dir, save_name)
                     if os.path.exists(save_dir):
                         shutil.rmtree(save_dir)
                     os.makedirs(save_dir)
                     for i, m in enumerate(model_):
                         m.save(os.path.join(save_dir, f"m{i:03d}.h5"))
                 else:
-                    model_.save(os.path.join(self.model_dir, f'{mn}.h5'))
+                    model_.save(os.path.join(self.model_dir, f'{save_name}.h5'))
         
     def _save_model(self, new_model, model_name):
         self.derived_models[model_name] = new_model
@@ -752,7 +917,10 @@ class LfmcModel():
         if hasattr(self, 'temp_dir'):
             for file in self._get_model_list(sort=False):
                 os.remove(file)
-            os.rmdir(self.temp_dir)
+            try:
+                os.rmdir(self.temp_dir)
+            except:
+                pass
         
     def get_models(self, models=None, last_n=False, load=False):
         """Gets a subset of checkpoint models
@@ -929,9 +1097,15 @@ class LfmcModel():
         plt.xlabel('epoch', fontsize=12)
         min_y = round(self.history[metric].min()*2-50, -2)/2
         if self.params['epochs'] >= 10:
-            max_y = round(self.history[metric][5:].max()*2+50, -2)/2
+            max_y = self.history[metric].iloc[5:].max()
         else:
-            max_y = round(self.history[metric].max()*2+50, -2)/2
+            max_y = self.history[metric].max()
+        if max_y > 100:
+            max_y = round(max_y * 2 + 50, -2) / 2
+        elif max_y > 10:
+            max_y = round(max_y * 2 + 5, -1) / 2
+        else:
+            max_y = round(max_y + 1, 0)
         plt.axis([0, self.params['epochs'], min_y, max_y])
         plt.legend()
         plt.title(f'Training Results - {metric}')
@@ -944,19 +1118,19 @@ class LfmcTempCnn(LfmcModel):
     
     A subclass of LfmcModel that builds a TempCNN. It caters for these
     inputs:
-      - modis - a timeseries of optical reflectance data
-      - prism - a timeseries of weather data
+      - optical - a daily timeseries of optical reflectance data
+      - weather - a daily timeseries of weather data
       - aux - the auxiliary data
         
     blocks:
-      - modisConv - convolves the modis data
-      - prismConv - convolves the prism data
+      - opticalConv - convolves the optical data
+      - weatherConv - convolves the weather data
       - fc - the fully-connected or dense layers
     """
     
-    input_list = ['modis', 'prism', 'aux']
-    model_blocks = {'modisConv': 'conv1d',
-                    'prismConv': 'conv1d',
+    input_list = ['optical', 'weather', 'aux', 'parent']
+    model_blocks = {'opticalConv': 'conv1d',
+                    'weatherConv': 'conv1d',
                     'fc': 'dense' }
     
     def build(self, inputs):
@@ -980,19 +1154,20 @@ class LfmcTempCnn(LfmcModel):
         flatten = keras.layers.Flatten
         concatenate = keras.layers.Concatenate
         inputs = self._build_inputs(inputs)
-        # Convolve MODIS data if required
-        modis = inputs.get('modis')
-        modis = self._add_block('modisConv', self._conv1d_block, modis)
-        # Convolve PRISM data if required
-        prism = inputs.get('prism')
-        prism = self._add_block('prismConv', self._conv1d_block, prism)
-        # Stack modis and prism data
-        modis = flatten(name='modis_flatten')(modis) if modis is not None else None
-        prism = flatten(name='prism_flatten')(prism) if prism is not None else None
-        daily = self._merge_inputs([modis, prism], concatenate(name='daily'))
-         # Combine EO and auxiliary features
+        # Convolve optical data if required
+        optical = inputs.get('optical')
+        optical = self._add_block('opticalConv', self._conv1d_block, optical)
+        # Convolve weather data if required
+        weather = inputs.get('weather')
+        weather = self._add_block('weatherConv', self._conv1d_block, weather)
+        # Stack optical and weather, and convolve to same shape as soilmoist data
+        optical = flatten(name='optical_flatten')(optical) if optical is not None else None
+        weather = flatten(name='weather_flatten')(weather) if weather is not None else None
+        daily = self._merge_inputs([optical, weather], concatenate(name='daily'))
+        # Combine EO and auxiliary features
         aux = inputs.get('aux')
-        full = self._merge_inputs([daily, aux], concatenate(name='concat'))
+        parent = inputs.get('parent')
+        full = self._merge_inputs([daily, aux, parent], concatenate(name='concat'))
         # Add the dense layers
         full = self._add_block('fc', self._dense_block, full)
         # Add the output layer
@@ -1001,3 +1176,4 @@ class LfmcTempCnn(LfmcModel):
                                  name=self.params['modelName'])
         if self.params['diagnostics']:
             self.summary()
+

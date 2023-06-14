@@ -5,7 +5,7 @@ import numpy as np
 import os
 import pandas as pd
 
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
    
 def reshape_data(X, nchannels):
@@ -95,7 +95,8 @@ def save_bounds(bounds, input_name='', model_dir=''):
     None.
 
     """
-    np.savetxt(os.path.join(model_dir, f'{input_name}_bounds.csv'), bounds, delimiter=',')
+    bounds_file = os.path.join(model_dir, f'{input_name}_bounds.csv')
+    np.savetxt(bounds_file, bounds, delimiter=',')
 
 
 def load_bounds(input_name='', model_dir=''):
@@ -143,6 +144,11 @@ def normalise(data, method='none', percentiles=0, data_range=[0, 10000], scaled_
             upper percentile is 1.
           - range: Normal across a set range, so lower range is 0 and
             upper range is 1.
+          - standard: Normalise to mean=0, std_dev=1. If `mean` and `sd`
+            parameters are provided, assume these values for input data
+            mean and std_dev, else calculate these from the data.
+          - FW_ratio: Convert the LFMC values to the fresh weight ratio
+            (instead of dry weight ratio) and scale to range [-1, 1].
           - none: Default. No normalisation performed. Data is clipped
             if required, otherwise returned unchanged.  
     percentiles : int or list-like, optional
@@ -161,8 +167,8 @@ def normalise(data, method='none', percentiles=0, data_range=[0, 10000], scaled_
         can be broadcast to `data`. After normalising, the data is
         re-scaled to this range. The default is (0, 1).
     clip : bool, optional
-        Indicates if the data should be clipped to ``data_range``
-        (``True``) or not (``False``). The default is False.
+        Indicates if the data should be clipped to ``range`` (``True``)
+        or not (``False``). The default is False.
     input_name : str
         The name of the model input being processed. Required if either
         ``save_bounds`` or ``load_bounds`` are True. The default is
@@ -229,6 +235,9 @@ def normalise(data, method='none', percentiles=0, data_range=[0, 10000], scaled_
             save_bounds(np.array([mean, sd]), input_name, model_dir)
         temp = (data - mean) / sd
         params = {'mean': mean, 'sd': sd}
+    elif method == 'FW_ratio':
+        temp = 2 * data / (100 + data) - 1
+        params = {}
     elif (method == 'none') or (method is None):
         return (data, {}) if return_params else data
     else: # method not implemented
@@ -255,10 +264,12 @@ def denormalise(data, method='none', data_range=(0, 10000), scaled_range=(0, 1),
         Array of the data to be normalised.
     method : str, optional
         Normalisation method to use. Currently implemented methods are:
-          - minMax: Normalise so the lower percentile is 0 and the upper
-            percentile is 1.
+          - minMax: Normalise so the lower percentile is 0 and the
+            upper percentile is 1.
           - range: Normal across a set range, so lower range is 0 and
             upper range is 1.
+          - FW_ratio: Convert the LFMC values from fresh weight ratios
+            back to dry weight ratios.
           - none: Default. No normalisation performed. Data is clipped
             if required, otherwise returned unchanged.  
     in_range : tuple or list-like, optional
@@ -267,9 +278,9 @@ def denormalise(data, method='none', data_range=(0, 10000), scaled_range=(0, 1),
         that can be broadcast to `data`. The default is [0, 10000].
     out_range : tuple or list-like, optional
         Two values corresponding to the lower and upper bounds of the
-        output range. The values can be numbers or numpy arrays that can
-        be broadcast to `data`. After normalising, the data is re-scaled
-        to this range. The default is (0, 1).
+        output range. The values can be numbers or numpy arrays that
+        can be broadcast to `data`. After normalising, the data is
+        re-scaled to this range. The default is (0, 1).
     mean : number or list-like, optional
         For the ``standard`` method. The mean of the denormalised data.
     sd : number or list-like, optional
@@ -291,44 +302,14 @@ def denormalise(data, method='none', data_range=(0, 10000), scaled_range=(0, 1),
         temp = temp * (data_range[1] - data_range[0]) + data_range[0]
     elif method == 'standard':
         temp = (data * sd ) + mean
+    elif method == 'FW_ratio':
+        temp = (1 + data) / (1 - data) * 100
     else: # method not implemented
         raise ValueError(f'Invalid method: {method}')
     return temp
 
 
-def get_onehot_enc(fit_data, onehot_cols, model_dir=None, save=False):
-    """Extract and save the one-hot encoder values.
-    
-    ``Onehot-cols`` is a list of the columns in ``fit_data`` that need
-    one-hot encoding. A dictionary is created with the onehot_cols as
-    keys and lists of the unique values in the relevant fit_data
-    columns as the values. This dictionary is written in json format to
-    the file ``onehot_data.json`` in ``model_dir``.
-    
-    Parameters
-    ----------
-    fit_data : DataFrame
-        Dataframe of training data.
-    onehot_cols : list
-        List of columns that need one-hot encoding.
-    model_dir : str
-        Directory where one-hoe encoder values are stored.
-
-    Returns
-    -------
-    None.
-
-    """
-    fit_df = pd.DataFrame(fit_data, columns=onehot_cols)
-    onehot_dict = {c[0]: c[1].dropna().unique().tolist() for c in fit_df.iteritems()}
-    if save:
-        file_name = os.path.join(model_dir, 'onehot_data.json')
-        with open(file_name, 'w') as f:
-            json.dump(onehot_dict, f, indent=2)
-    return onehot_dict
-
-        
-def create_onehot_enc(onehot_cols, fit_data=None, model_dir=None, save=False):
+def create_onehot_enc(onehot_cols, fit_data=None, model_dir=None, source_dir=None, save=False):
     """Creates the one-hot encoder
     
     Creates, fits and optionally saves a one-hot encoder. If
@@ -360,12 +341,20 @@ def create_onehot_enc(onehot_cols, fit_data=None, model_dir=None, save=False):
 
     """
     if fit_data is None:
-        file_name = os.path.join(model_dir, 'onehot_data.json')
+        source_dir = source_dir or model_dir
+        file_name = os.path.join(source_dir, 'onehot_data.json')
         with open(file_name, 'r') as f:
             onehot_dict = json.load(f)
         fit_data = [[onehot_dict[cat][0] for cat in onehot_cols]]   # dummy data to fit the encoder
     else:
-        onehot_dict = get_onehot_enc(fit_data, onehot_cols, model_dir, save)
+        fit_df = pd.DataFrame(fit_data, columns=onehot_cols)
+        onehot_dict = {c[0]: c[1].dropna().unique().tolist() for c in fit_df.items()}
+
+    if save and ((fit_data is not None) or (source_dir != model_dir)):
+        file_name = os.path.join(model_dir, 'onehot_data.json')
+        with open(file_name, 'w') as f:
+            json.dump(onehot_dict, f, indent=2)
+
     # Set categories to a nested list of the values to encode for each variable. Then
     # create dummy data for fitting the encoder. The encoder will use the categories
     # to create the encoding, rather than the fitting data.
@@ -376,3 +365,39 @@ def create_onehot_enc(onehot_cols, fit_data=None, model_dir=None, save=False):
                                sparse=False, dtype='int')
     onehot_enc.fit(np.array(fit_data))
     return onehot_enc
+
+
+def ordinal_encoder(data):
+    enc = OrdinalEncoder()
+    enc.fit(data)
+    return enc.transform(data)
+
+
+def set_thresholds(samples, thresholds):
+    th = thresholds.copy()
+    default = th.pop('default')
+    threshold_column = (set(th.keys()) - set(['Thresholds'])).pop()
+    thresholds_df = pd.DataFrame(th).explode(threshold_column, True)
+    index_name = samples.index.name or 'index'
+    samples2 = samples.reset_index().merge(thresholds_df, 'left').set_index(index_name)
+    return samples2['Thresholds'].fillna(default)
+
+
+def reweight_source(labels, source, target):
+    bin_size = 1
+    weights = pd.Series([1.0] * labels.shape[0], index=labels.index)
+    min_ = 0 
+    max_ = int(labels.max()) + 1
+    source_count =labels[source].count()
+    target_count = labels[target].count()
+    bin_t = 0
+    for b in range(min_, max_, bin_size):
+        bin_s = labels[source].between(b, b+bin_size, inclusive='left').sum()
+        bin_t += labels[target].between(b, b+bin_size, inclusive='left').sum()
+        if bin_s == 0:
+            continue
+        else:
+            weight = (bin_t / target_count) / (bin_s / source_count)
+            bin_t = 0
+        weights[source][labels[source].between(b, b+bin_size, inclusive='left')] = weight
+    return weights

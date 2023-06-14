@@ -13,34 +13,29 @@ from sklearn.model_selection import ShuffleSplit
 from sklearn.model_selection import StratifiedKFold
 from sklearn.model_selection import KFold
 
-from data_prep_utils import normalise
 
-def _stratify_sites(data, split_col, stratify, min_sites):
+def _stratify_split(data, split_col, stratify, min_values):
     print(f'Split by {split_col}, stratify by {stratify}')
-    # Assign a unique landcover value to each site
-    sites = data.groupby([split_col], as_index=False).agg(
+    # Assign a unique stratify value to each site
+    groups = data.groupby([split_col], as_index=False).agg(
         stratify=(stratify, lambda x: pd.Series.mode(x)[0]))
-    lc = sites.groupby(['stratify'], as_index=False).agg(counts=(split_col, 'count'))
-    # Group landcover classes with fewer than min_sites sites into one group
-    lc = lc.stratify[lc.counts < min_sites]
-    if pd.api.types.is_numeric_dtype(sites.stratify):  # Stratify values are numeric
+    strat = groups.groupby(['stratify'], as_index=False).agg(counts=(split_col, 'count'))
+    # Group stratify classes with fewer than min_sites sites into one group
+    strat = strat.stratify[strat.counts < min_values]
+    if pd.api.types.is_numeric_dtype(groups.stratify):  # Stratify values are numeric
         dummy_value = -99
     else:  # Stratify values are strings
         dummy_value = '@#$%'
-    sites.loc[sites.stratify.isin(lc), 'stratify'] = dummy_value
+    groups.loc[groups.stratify.isin(strat), 'stratify'] = dummy_value
     # Return the stratified sites
-    return sites
+    return groups
 
 
-def _samples_filter(parent_filter, samples, X, parent_results, parent_incl):
+def _samples_filter(parent_filter, samples, X, parent_results): #, parent_normal):
     samp_idx = samples.index
     num_samp = samples.shape[0]
-    if parent_incl:  # Add the parent results to the model inputs 
-        parent_data = parent_results.reindex(samp_idx).to_numpy().reshape(num_samp, -1)
-        if isinstance(parent_incl, dict):
-            parent_data = normalise(parent_data, **parent_incl)
-        X['parent'] = parent_data
-        print(f"parent shape: {X['parent'].shape}")
+    X['parent'] = parent_results.reindex(samp_idx).to_numpy().reshape(num_samp, -1)
+    print(f"parent shape: {X['parent'].shape}")
 
     if parent_filter:  # Create a filter index based on the parent results
         filter_method = parent_filter[0]
@@ -54,13 +49,13 @@ def _samples_filter(parent_filter, samples, X, parent_results, parent_incl):
         return np.array([True] * num_samp)
     
     
-def partition_by_year(sample_dates, year, train_index, val_index, test_index, num_years=None,
-                      test_all_years=False, train_adjust=0, test_adjust=0):
+def partition_by_year(sample_dates, year, train_index, test_index, num_years=None,
+                      sample_values=None, test_all_years=False, train_adjust=0, test_adjust=0):
     """Partitions a dataset by year
     
     Ensures temporal separation of the test and training samples. The
-    main usage is to ensure all samples in the training and validation
-    sets were collected before ``year``, and all samples in the test
+    main usage is to ensure all samples in the training
+    set were collected before ``year``, and all samples in the test
     set were collected on or after ``year``. Each input index is a bool
     index listing the candidate samples. The function sets the index to
     `False` for samples that were not collected in the right years.
@@ -71,10 +66,8 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
         beginning/end of the year.
       2. If `test_adjust` < `-train_adjust`, some samples may be in\
         both the training and test sets.
-      3. If `train_adjust` is `"nonTest"`, the training and validation\
+      3. If `train_adjust` is `"nonTest"`, the training and\
         date range is all dates outside the test date range.
-      4. The validation set is adjusted in the same way as the\
-        training set.
 
     Parameters
     ----------
@@ -83,15 +76,11 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
     year : int
         The first year to include in the test set.
     train_index : np.array
-        1-dimensional bool array the same length as sample_years.
+        1-dimensional bool array the same length as sample_dates.
         Samples in the training set should be set to True, all others
         to False.
-    val_index : np.array
-        1-dimensional bool array the same length as sample_years.
-        Samples in the validation set should be set to True, all others
-        to False.
     test_index : np.array
-        1-dimensional bool array the same length as sample_years.
+        1-dimensional bool array the same length as sample_dates.
         Samples in the test set should be set to True, all others
         to False.
     num_years : int, optional
@@ -101,27 +90,25 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
         in the test set.
     test_all_years : bool, optional
         If ``True``, the test index is returned unchanged (train_index
-        and val_index are still updated). The default is False.
+        is still updated). The default is False.
     train_adjust : int or str, optional
-        If int: The number of days to adjust the end date of the training and
-        validation sets. E.g. `90` will remove all samples within 90
-        days of the end of the training set. These samples are
-        discarded (NOT added to the test set).
+        If int: The number of days to adjust the end date of the
+        training and validation sets. E.g. `90` will remove all samples
+        within 90 days of the end of the training set. These samples
+        are discarded (NOT added to the test set).
         If str: The only valid value is 'nonTest'. Only the samples
         that are in the test set are removed from the training and
         validation sets. 
         The default is 0.
-    test_adjust : int or str, optional
-      - If `int`: The number of days to adjust the start and end dates
-        of the test set. A postive number will shift the dates forward
-        and a negative number will shift them backwards. E.g. setting
+    test_adjust : int, optional
+      - The number of days to adjust the start and end date of the test
+        set. A postive number will shift the dates forward and a
+        negative number will shift them backwards. E.g. setting
         `test_adjust` to `90`, `year` to `2014` and `num_year` to `1`
         will result in a test set containing samples from `01-Apr-2014`
         to `31-Mar-2015`. Samples in the adjustment period (e.g.
         `01-Jan-2014` to `31-Mar-2014`) are discarded (NOT added to the
         training or validation sets).
-      - If `str`: The only valid `str` value is `nonTest`. All current
-        training samples not in the test date range will be retained.
       - The default is 0.
 
     Returns
@@ -129,9 +116,6 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
     train_index : np.array
         The updated training index with all samples for the test years
         set to False.
-    val_index : np.array
-        The updated validation index with all samples for the test
-        years set to False.
     test_index : np.array
         The updated test index with all samples for years other than
         the test years set to False.
@@ -139,7 +123,10 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
     """
     temp_dates = pd.to_datetime(sample_dates.astype(str))
     train_end = pd.to_datetime(year, format='%Y')
+    
+    # Set up the test index for the test dates
     if test_index is not None and not test_all_years:
+        # Create the test adjustment index
         test_adjust = test_adjust or 0
         test_start = pd.to_datetime(year, format='%Y') + pd.Timedelta(test_adjust, 'D')
         if num_years:
@@ -148,7 +135,15 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
         else:
             test_end = pd.Timestamp.max
         adjust_index = temp_dates.between(test_start, test_end, inclusive='left')
+        # Remove samples outside the test date range from the text index
         test_index = test_index & adjust_index
+
+    # Add any samples with a sample_value not in the test set to the training set
+    if sample_values is not None:
+        sample_index = ~ sample_values.isin(sample_values[test_index])
+        train_index = train_index | sample_index
+        
+    # Set up the training and validation indexes for the training dates
     if isinstance(train_adjust, int):
         if train_adjust:
             train_end = train_end - pd.Timedelta(train_adjust, 'D')
@@ -162,16 +157,63 @@ def partition_by_year(sample_dates, year, train_index, val_index, test_index, nu
     else:
         raise ValueError(f'Invalid train_adjust value: {train_adjust}. ')
     train_index = train_index & adjust_index
-    if val_index is not None:
-        val_index = val_index & adjust_index
-    return train_index, val_index, test_index
+    return train_index, test_index
+    
+    
+def partition_by_value(part_data, train_index, test_index,
+                       train_values=None, test_values=None):
+    """Partitions a dataset by value
+    
+    Ensures separation by value of the test and training samples. Each
+    input index is a bool index listing the candidate samples. The
+    function sets the train index to `False` for samples that do not
+    have a valid train value and test index to `False` for samples that
+    do not have a valid test value.
+    
+    Parameters
+    ----------
+    part_data : pd.Series
+        The column to use to partition the data.
+    train_index : np.array
+        1-dimensional bool array the same length as part_data.
+        Samples in the training set should be set to True, all others
+        to False.
+    test_index : np.array
+        1-dimensional bool array the same length as part_data.
+        Samples in the test set should be set to True, all others
+        to False.
+    train_values : list
+        The list of values to include in the training data. If ``None``
+        (or anything other than a list), the train_index and val_indexes
+        are returned unchanged
+    test_values : list
+        The list of values to include in the test data. Values may
+        overlap with train_values. If ``None`` (or anything other than a
+        list), the test_index is returned unchanged.
+
+    Returns
+    -------
+    train_index : np.array
+        The updated training index with all samples for the test years
+        set to False.
+    test_index : np.array
+        The updated test index with all samples for years other than
+        the test years set to False.
+
+    """
+    if test_index is not None:
+        test_adjust = part_data.isin(test_values)
+        test_index = test_index & test_adjust
+    train_adjust = part_data.isin(train_values)
+    train_index = train_index & train_adjust
+    return train_index, test_index
     
 	
-def random_split(num_samples, split_sizes, val_data=False, random_seed=None):
+def random_split(num_samples, test_size, random_seed=None):
     """Splits samples randomly
     
-    Randomly assigns numbers in range(0, num_samples) to the test,
-    training and validation set in accordance with the required split
+    Randomly assigns numbers in range(0, num_samples) to the test and
+    training sets in accordance with the required split
     sizes. Returns an index for each set that indicates which samples
     are in each set.
 
@@ -179,13 +221,9 @@ def random_split(num_samples, split_sizes, val_data=False, random_seed=None):
     ----------
     num_samples : int
         The number of samples.
-    split_sizes : tuple of length 1 or 2
-        The size of the test and optionally the validation set. If the
-        tuples are integers, they are interpreted as the number of
-        samples. If they are floats, they are interpreted as the
-        proportion of samples.
-    val_data : bool, optional
-        Indicates if validation data is required. The default is False.
+    test_size : float or int
+        The size of the test set. If int, the number of samples. If
+        float, the proportion of samples.
     random_seed : int, optional
         The seed for the random number generator. The default is None.
 
@@ -194,9 +232,6 @@ def random_split(num_samples, split_sizes, val_data=False, random_seed=None):
     train_index : array of bool
         An array of length num_samples. True if the sample should be
         included in the training set, false otherwise.
-    val_index : array of bool
-        An array of length num_samples. True if the sample should be
-        included in the validation set, false otherwise.
     test_index : array of bool
         An array of length num_samples. True if the sample should be
         included in the test set, false otherwise.
@@ -207,7 +242,6 @@ def random_split(num_samples, split_sizes, val_data=False, random_seed=None):
     random.shuffle(sample_list)
 
     # Generate the test index
-    test_size = split_sizes[0]
     if type(test_size) is int:
         break1 = test_size
     else:
@@ -215,23 +249,10 @@ def random_split(num_samples, split_sizes, val_data=False, random_seed=None):
     test_index = np.zeros(num_samples, dtype=bool)
     test_index[sample_list[:break1]] = True
 
-    # Generate the validation index if used
-    if val_data:
-        val_size = split_sizes[1]
-        if type(val_size) is int:
-            break2 = break1 + val_size
-        else:
-            break2 = break1 + int(np.floor(num_samples * (val_size)))
-        val_index = np.zeros(num_samples, dtype=bool)
-        val_index[sample_list[break1:break2]] = True
-    else:
-        break2 = break1
-        val_index = None
-
     # Generate the training index
     train_index = np.zeros(num_samples, dtype=bool)
-    train_index[sample_list[break2:]] = True
-    return train_index, val_index, test_index
+    train_index[sample_list[break1:]] = True
+    return train_index, test_index
 
 
 def train_val_split(num_samples, val_size, train_val_idx, random_seed=None):
@@ -261,20 +282,49 @@ def train_val_split(num_samples, val_size, train_val_idx, random_seed=None):
         included in the validation set, false otherwise.
 
     """
-    idx, _, _ = random_split(train_val_idx.sum(), (0, val_size), True, random_seed)
-    train = np.array([False] * num_samples)
-    val = np.array([False] * num_samples)
+    idx, _ = random_split(train_val_idx.sum(), val_size, random_seed)
+    train_index = np.array([False] * num_samples)
+    val_index = np.array([False] * num_samples)
     pos = 0
     for i, x in enumerate(train_val_idx):
         if x:
-            train[i] = idx[pos]
-            val[i] = not idx[pos]
+            train_index[i] = idx[pos]
+            val_index[i] = not idx[pos]
             pos += 1
-    return train, val
+    return train_index, val_index
 
 
-def split_by_site(data, split_sizes, split_col='Site', stratify=None,
-                val_data=False, min_sites=6, random_seed=None):
+def filter_index(samples, filter_params, match_sources=None, train_index=None, random_seed=None):
+    filter_ = np.ones(samples.shape[0])
+    if filter_params:
+        filter_column = filter_params.get('column')
+        filter_method = filter_params.get('method')
+        filter_params = filter_params.get('params')
+        if filter_method == 'matchTest':
+            if match_sources and filter_column:
+                # For multi-source input, select samples where the filter_column value matches
+                # the range of values present in the match_sources inputs
+                filter_ = samples.loc[match_sources][filter_column].drop_duplicate()
+                filter_ = samples[filter_column].isin(filter_)
+        elif filter_method == 'random':
+            if train_index is None:
+                # Get a fixed number of samples for training/testing
+                _, filter_ = random_split(samples.shape[0], filter_params[0], random_seed)
+            else:
+                # We want a fixed number of samples from the training set, which is identified by
+                # train_index. We get them by doing a train_val_split, which returns the required
+                # number of samples in the second position
+                _, filter_ = train_val_split(samples.shape[0], filter_params[0],
+                                             train_index, random_seed)
+        else:
+            filter_str = ', '.join([str(x) for x in filter_params])
+            print(f"Samples filtered using \"{filter_column}.{filter_method}({filter_str})\"")
+            filter_ = getattr(samples[filter_column], filter_method)(*filter_params)
+    return filter_
+
+
+def split_by_column(data, test_size, train_index=None, split_col='Site', stratify=None,
+                    min_sites=6, random_seed=None):
     """Splits sample sites randomly.
     
     Randomly assigns sites to the test, training and validation sets in
@@ -289,18 +339,15 @@ def split_by_site(data, split_sizes, split_col='Site', stratify=None,
     data : DataFrame
         Data Frame of samples. Must have a column labelled with
         ``split_col``, and one labelled with ``stratify`` if specified.
-    split_sizes : tuple of length 1 or 2
-        The size of the test and optionally the validation set. If the
-        tuples are ints, they are interpreted as the number of sites.
-        If floats, they are interpreted as the proportion of sites.
+    test_size : float or int
+        The size of the test set. If int, the number of samples. If
+        float, the proportion of samples.
     split_col : str, optional
         The name of the column containing the sample site. The default
         is 'Site'.
     stratify : str or None, optional
         The name of the column to use for stratified splitting. None
         for no stratified splits. The default is None.
-    val_data : bool, optional
-        Indicates if validation data is required. The default is False.
     min_sites : int, optional
         The minimum number of sites in a stratified group. Groups with
         fewer sites are combined into a single group. The default is 6.
@@ -312,59 +359,84 @@ def split_by_site(data, split_sizes, split_col='Site', stratify=None,
     train_index : array of bool
         An array of length equal to rows in data. True if the sample
         should be included in the training set, false otherwise.
-    val_index : array of bool
-        An array of length equal to rows in data. True if the sample
-        should be included in the validation set, false otherwise.
     test_index : array of bool
         An array of length equal to rows in data. True if the sample
         should be included in the test set, false otherwise.
     """
+    # Create the groups
+    group_data = data if train_index is None else data[train_index]
     if stratify:
-        sites =_stratify_sites(data, split_col, stratify, min_sites)
-        y = sites.stratify
+        groups =_stratify_split(group_data, split_col, stratify, min_sites)
+        y = groups.stratify
         Splitter = StratifiedShuffleSplit
         
     else:
         print(f'Split by {split_col}, no stratify')
-        sites = data.groupby([split_col], as_index=False).agg(counts=(split_col, 'count'))
-        y = sites[split_col]
+        groups = group_data.groupby([split_col], as_index=False).agg(counts=(split_col, 'count'))
+        y = groups[split_col]
         Splitter = ShuffleSplit
 
+    # Generate the indexes
     temp = data.reset_index()[split_col]
-    
-    # Generate the test index
-    test_size = split_sizes[0]
     if type(test_size) is float:
         test_size = int(np.floor(y.size * test_size))
     sss = Splitter(n_splits=1, test_size=test_size, random_state=random_seed)
-    trainSites, testSites = next(sss.split(y, y))
+    train_values, test_values = next(sss.split(y, y))
+    if train_index is None:
+        train_index = np.ones(temp.size, dtype=bool)
+    test_index = train_index.copy()
+    train_index[temp.isin(groups.loc[test_values, split_col]).values] = False
+    test_index[temp.isin(groups.loc[train_values, split_col]).values] = False
+    return train_index, test_index	
+
+
+def split_by_source(data, test_sources, train_sources=None, random_seed=None):
+    """Splits sample sites randomly.
+    
+    Splits the data into training and test sets by source.
+    
+    Parameters
+    ----------
+    data : DataFrame
+        Data Frame of samples. Must have an index or column named
+        ``Source``, which will be used to split the data.
+    test_sources : list
+        A list of sources to use for the test data.
+    train_sources : list, optional
+        A list of sources to use for the training data. If ``None``, all
+        sources that are not test sources are used for training. The
+        default is None.
+    random_seed : int, optional
+        The seed for the random number generator. The default is None.
+
+    Returns
+    -------
+    train_index : array of bool
+        An array of length equal to rows in data. True if the sample
+        should be included in the training set, false otherwise.
+    test_index : array of bool
+        An array of length equal to rows in data. True if the sample
+        should be included in the test set, false otherwise.
+    """
+    temp = data.reset_index().Source
+    
+    # Generate the test index
     test_index = np.zeros(temp.size, dtype=bool)
-    test_index[temp.isin(sites.loc[testSites, split_col])] = True
-
-    # Generate the validation index if used
-    if val_data:
-        val_size = split_sizes[1]
-        if type(val_size) is float:
-            val_size = int(np.floor(y.size * val_size))
-        y1 = y.iloc[trainSites]
-        rs = None if random_seed is None else random_seed * 2
-        sss = Splitter(n_splits=1, test_size=val_size, random_state=rs)
-        ti, vi = next(sss.split(y1, y1))
-        valSites = trainSites[vi]
-        trainSites = trainSites[ti]
-        val_index = np.zeros(temp.size, dtype=bool)
-        val_index[temp.isin(sites.loc[valSites, split_col])] = True
+    test_index[temp.isin(test_sources)] = True
+    
+    # Generate the train index
+    if train_sources:
+        train_index = np.zeros(temp.size, dtype=bool)
+        train_index[temp.isin(train_sources)] = True
     else:
-        val_index = None
+        train_index = np.ones(temp.size, dtype=bool)
+        train_index[temp.isin(test_sources)] = False
 
-    # Generate the training index
-    train_index = np.zeros(temp.size, dtype=bool)
-    train_index[temp.isin(sites.loc[trainSites, split_col])] = True
-    return train_index, val_index, test_index	
+    return train_index, test_index	
 
 
 def kfold_indexes(data, n_folds, test_folds=1, split_col='Site', stratify=None,
-                  val_size=0, min_values=6, random_seed=None):
+                  min_values=6, random_seed=None):
     """Creates k-fold splits
     
     Creates ``nFold`` splits of the "sites" by randomly assigning sites
@@ -399,11 +471,6 @@ def kfold_indexes(data, n_folds, test_folds=1, split_col='Site', stratify=None,
     stratify : str or None, optional
         The name of the column to use for stratified splitting. None
         for no stratified splits. The default is None.
-    val_size : int or float, optional
-        The number (int) or proportion (float) of samples to assign to
-        the validation set in each fold. The validation samples are
-        randomly selected from the training set. If 0, no validation
-        sets are created. The default is 0.
     min_values : int, optional
         The minimum number of ``split_col`` values in a stratified
         group. Groups with fewer values are combined into one group.
@@ -418,11 +485,6 @@ def kfold_indexes(data, n_folds, test_folds=1, split_col='Site', stratify=None,
         of length equal to rows in ``data``. Elements are True if the
         sample should be included in the training set for the fold,
         false otherwise.
-    val_index : list of bool arrays
-        A list containing a bool array for each fold. The arrays are
-        of length equal to rows in ``data``. Elements are True if the
-        sample should be included in the validation set for the fold,
-        false otherwise.
     test_index : list of bool arrays
         A list containing a bool array for each fold. The arrays are
         of length equal to rows in ``data``. Elements are True if the
@@ -435,27 +497,23 @@ def kfold_indexes(data, n_folds, test_folds=1, split_col='Site', stratify=None,
             test_ = folds[x[0]]['test']
             train_ = folds[x[0]]['train']
             for y in x:
-                test_ = np.union1d(test_ , folds[y]['test'])
+                test_ = np.union1d(test_, folds[y]['test'])
                 train_ = np.setdiff1d(train_, folds[y]['test'])
             new_folds.append({'train': train_, 'test': test_})
         return new_folds
         
         
     if stratify:
-        split_values =_stratify_sites(data, split_col, stratify, min_values)
+        split_values =_stratify_split(data, split_col, stratify, min_values)
         y = split_values.stratify
         Splitter = StratifiedKFold
-        ValSplitter = StratifiedShuffleSplit
         
     else:
         print(f'Split by {split_col}, no stratify')
         split_values = data.groupby([split_col], as_index=False).agg(counts=(split_col, 'count'))
         y = split_values[split_col]
         Splitter = KFold
-        ValSplitter = ShuffleSplit
 
-    temp = data.reset_index()[split_col]
-    
     # Create the folds
     sss = Splitter(n_splits=n_folds, shuffle=True, random_state=random_seed)
     folds = [{'train': i1, 'test': i2} for i1, i2 in sss.split(y, y)]
@@ -463,37 +521,49 @@ def kfold_indexes(data, n_folds, test_folds=1, split_col='Site', stratify=None,
         folds = multi_folds(folds, test_folds)
         n_folds = len(folds)
     
-    # Generate the test indexes
+    # Generate the indexes
+    temp = data.reset_index()[split_col]
+    train_index = [np.zeros(temp.size, dtype=bool) for _ in range(n_folds)]
     test_index = [np.zeros(temp.size, dtype=bool) for _ in range(n_folds)]
     for n, fold in enumerate(folds):
+        train_index[n][temp.isin(split_values.loc[fold['train'], split_col])] = True
         test_index[n][temp.isin(split_values.loc[fold['test'], split_col])] = True
 
-    # Generate the validation indexes if used
-    if val_size:
-        if type(val_size) is float:
-            val_size = int(np.floor(y.size * val_size))
-        rs = None if random_seed is None else random_seed * 2
-        val_index = [np.zeros(temp.size, dtype=bool) for _ in range(n_folds)]
-        for n, fold in enumerate(folds):
-            y1 = y.iloc[fold['train']]
-            sss = ValSplitter(n_splits=1, test_size=val_size, random_state=rs)
-            ti, vi = next(sss.split(y1, y1))
-            valSites = fold['train'][vi]
-            fold['train'] = fold['train'][ti]
-            val_index[n][temp.isin(split_values.loc[valSites, split_col])] = True
+    return train_index, test_index
+
+
+def _get_split_indexes(model_params, samples):
+    split_type = model_params['splitMethod']
+    if split_type == 'bySource':
+        if model_params['testSources']:
+            train_index, test_index = split_by_source(
+                    data=samples,
+                    test_sources=model_params['testSources'],
+                    train_sources=model_params['trainSources'],
+                    random_seed=model_params['randomSeed'])
+        else:
+            raise ValueError("testSources parameter required with 'bySource' splits")
     else:
-        val_index = [None] * n_folds
+        if model_params['testSize'] <= 0:
+            raise ValueError(f"testSize parameter must be > 0 for single {split_type} split")
+        if split_type == 'random':
+            train_index, test_index = random_split(
+                    num_samples=samples.shape[0],
+                    test_size=model_params['testSize'],
+                    random_seed=model_params['randomSeed'])
+        elif split_type == 'byValue':
+            train_index, test_index = split_by_column(
+                    data=samples,
+                    test_size=model_params['testSize'],
+                    split_col=model_params['splitColumn'],
+                    stratify=model_params['splitStratify'],
+                    random_seed=model_params['randomSeed'])
+        else:
+            raise ValueError(f"Invalid train/test split method: {split_type}")
+    return train_index, test_index
 
-    # Generate the training indexes
-    train_index = [np.zeros(temp.size, dtype=bool) for n in range(n_folds)]
-    for n, fold in enumerate(folds):
-        train_index[n][temp.isin(split_values.loc[fold['train'], split_col])] = True
 
-    return train_index, val_index, test_index
-
-
-def split_data(data, train_index, test_index, val_index=None,
-               input_name='', model_dir='', save_params=False, **normal):
+def split_data(data, train_index, test_index, val_index=None, **unused):
     """Splits data into train, test and validation sets
     
     Splits data into train, test and (optionally) validation sets using
@@ -524,10 +594,69 @@ def split_data(data, train_index, test_index, val_index=None,
         The validation data (if any).
     """
     #split the sample set into training, validation and testing sets
-    train_data = data[train_index]
+    train_data = data[train_index] if train_index is not None else None
     val_data = data[val_index] if val_index is not None else None
     test_data = data[test_index] if test_index is not None else None
     return train_data, test_data, val_data
+
+
+def _get_data_by_source(X, y, train_index, val_index, test_index,
+                        sample_sources, train_sources, test_sources):
+    data = {'train': {}, 'val':   {}, 'test':  {}}
+
+    test_index = None if test_index is None else (
+        test_index & sample_sources.isin(test_sources).values)
+    _, y_test, _ = split_data(y, None, test_index, None)
+    data['test'] = {'X': {}, 'y': y_test}
+    for input_, xdata in X.items():
+        _, test, _ = split_data(xdata, None, test_index, None)
+        data['test']['X'][input_] = test
+
+    for source in train_sources:
+        trn_ind = train_index & sample_sources.eq(source).values
+        val_ind = None if val_index is None else (
+            val_index & sample_sources.eq(source).values)
+        y_train, _, y_val = split_data(y, trn_ind, None, val_ind)
+        data['train'][source] = {'X': {}, 'y': y_train}
+        data['val'][source] = {'X': {}, 'y': y_val}
+        for input_, xdata in X.items():
+            train, _, val = split_data(xdata, trn_ind, None, val_ind)
+            data['train'][source]['X'][input_] = train
+            data['val'][source]['X'][input_] = val
+    return data
+
+
+def _get_data(model_params, samples, X, y, parent_results,
+              train_index, val_index, test_index, fold=''):
+    if parent_results is not None:
+        parent_filter = model_params['inputs']['parent'].get('filter')
+        try:
+            parent_data = parent_results.base
+            samples_index = _samples_filter(parent_filter, samples, X, parent_data) #, parent_normal)
+        except:
+            year = fold.split('_')[0]
+            parent_data = parent_results[f'{year}_base']
+            samples_index = _samples_filter(parent_filter, samples, X, parent_data) #, parent_normal)
+        train_index = train_index & samples_index
+        test_index = None if test_index is None else (test_index & samples_index)
+        val_index = None if val_index is None else (val_index & samples_index)
+
+    if isinstance(model_params['epochs'], int):
+        y_train, y_test, y_val = split_data(y, train_index, test_index, val_index)
+        data = {'train': {'X': {}, 'y': y_train},
+                'val':   {'X': {}, 'y': y_val},
+                'test':  {'X': {}, 'y': y_test}}
+        for source, xdata in X.items():
+            train, test, val = split_data(xdata, train_index, test_index, val_index)
+            data['train']['X'][source] = train
+            data['val']['X'][source] = val
+            data['test']['X'][source] = test
+    else:
+        train_sources = list(model_params['epochs'].keys())
+        test_sources = model_params['testSources']
+        data = _get_data_by_source(X, y, train_index, val_index, test_index,
+                                   samples.reset_index().Source, train_sources, test_sources)
+    return data
 
 
 def train_test_split(model_params, samples, X, y, parent_results):
@@ -539,22 +668,22 @@ def train_test_split(model_params, samples, X, y, parent_results):
     Note: this function makes a single train/test split. kfold_split
     is used if multiple train/test splits are required.
     
-    validationSet:
-        Indicates if a validation set should be created.
+    valSize:
+        If > 0, indicates if a validation set should be created.
     
     splitMethod:
       - random: samples are split randomly
-      - bySite: sites are split into test and training sites, then all
+      - byValue: sites are split into test and training sites, then all
         samples from the site are allocated to the respective set
       - byYear: samples are allocated to the test and training sets
         based on the sampling year
     
-    splitSizes:
-        The proportion or number of samples to allocate to the test and
-        validation sets. Used for random and bySite splits.
+    valSize:
+        The proportion or number of samples to allocate to the validation
+        set. Used for random and byValue splits.
     
     splitColumn:
-        The column in the samples containing the site. Used for bySite
+        The column in the samples containing the site. Used for byValue
         splits.
     
     yearColumn:
@@ -566,7 +695,7 @@ def train_test_split(model_params, samples, X, y, parent_results):
         is needed. Stratified splitting groups the sites by value and
         ensures each split contains a roughly equal proportion of each
         group. If None, stratified splittig is not used. Used for
-        bySite splits.
+        byValue splits.
     
     splitYear:
       - If splitMethod is "byYear" and splitFolds is 0: Samples for
@@ -576,13 +705,13 @@ def train_test_split(model_params, samples, X, y, parent_results):
         this year go into the test set. Samples earlier than this year
         go into the training set. Samples for later than this year are
         not used.
-      - If splitMethod is "random" or "bySite": Any samples in the test
+      - If splitMethod is "random" or "byValue": Any samples in the test
         set for earlier than this year are removed. Any samples in the
         training or validation sets for this year or later are removed.
                 
     randomSeed:
         The seed for the random number generator. Used for random and
-        bySite splits.
+        byValue splits.
     
     Parameters
     ----------
@@ -610,98 +739,68 @@ def train_test_split(model_params, samples, X, y, parent_results):
         entries are included even when no validation set is required.
         In this case, all lowest level values are ``None``.
     """
-    def get_split_indexes(model_params, samples):
-        if model_params['splitMethod'] == 'random':
-            train_index, val_index, test_index = random_split(
-                    num_samples=samples.shape[0],
-                    split_sizes=model_params['splitSizes'],
-                    val_data=model_params['validationSet'],
-                    random_seed=model_params['randomSeed'])
-        elif model_params['splitMethod'] == 'bySite':
-            train_index, val_index, test_index = split_by_site(
-                    data=samples,
-                    split_sizes=model_params['splitSizes'],
-                    split_col=model_params['splitColumn'],
-                    stratify=model_params['splitStratify'],
-                    val_data=model_params['validationSet'],
-                    random_seed=model_params['randomSeed'])
-        if model_params['splitYear']:
-            train_index, val_index, test_index = partition_by_year(
-                samples[model_params['yearColumn']],
-                model_params['splitYear'],
-                train_index, val_index, test_index,
-                test_all_years=model_params['testAllYears'],
-                train_adjust=model_params['trainAdjust'],
-                test_adjust=model_params['testAdjust'])
-        return train_index, val_index, test_index
-
     def get_yearly_indexes(model_params, samples):
         full_index = pd.Series([True] * samples.shape[0], index=samples.index)
-        train_index, val_index, test_index = partition_by_year(
+        train_index, test_index = partition_by_year(
             samples[model_params['yearColumn']],
             model_params['splitYear'],
-            full_index, None, full_index,
+            full_index, full_index,
             num_years=model_params['splitFolds'],
             test_all_years=model_params['testAllYears'],
             train_adjust=model_params['trainAdjust'],
             test_adjust=model_params['testAdjust'])
-        if model_params['validationSet']:
-            train_index, val_index = train_val_split(
-                    num_samples=samples.shape[0],
-                    val_size=model_params['splitSizes'][1],
-                    train_val_idx=train_index,
-                    random_seed=model_params['randomSeed'])
-        return train_index, val_index, test_index
+        return train_index, test_index
 
-    def get_nosplit_indexes(model_params, samples):        
-        test_index = None
-        train_index = np.array([True] * samples.shape[0])
-        if model_params['validationSet']:
-            train_index, val_index = train_val_split(
-                    num_samples=samples.shape[0],
-                    val_size=model_params['splitSizes'][1],
-                    train_val_idx=train_index,
-                    random_seed=model_params['randomSeed'])
+    split_type = model_params['splitMethod']
+    if split_type in ['random', 'byValue', 'bySource']:
+        train_index, test_index = _get_split_indexes(model_params, samples)
+        sample_values = samples[model_params['splitColumn']] if model_params['splitMax'] else None
+        if model_params['splitYear']:
+            train_index, test_index = partition_by_year(
+                samples[model_params['yearColumn']],
+                model_params['splitYear'],
+                train_index, test_index,
+                sample_values = sample_values,
+                test_all_years=model_params['testAllYears'],
+                train_adjust=model_params['trainAdjust'],
+                test_adjust=model_params['testAdjust'])
+    elif split_type in ['byYear', None]:
+        if model_params['splitYear']:
+            train_index, test_index = get_yearly_indexes(model_params, samples)
         else:
-            val_index = None
-        return train_index, val_index, test_index
-
-    if model_params['splitMethod'] in ['random', 'bySite']:
-        train_index, val_index, test_index = get_split_indexes(model_params, samples)
-    elif model_params['splitMethod'] == 'byYear':
-        train_index, val_index, test_index = get_yearly_indexes(model_params, samples)
-    elif not model_params['splitMethod']:
-        train_index, val_index, test_index = get_nosplit_indexes(model_params, samples)
+            test_index = None
+            train_index = np.array([True] * samples.shape[0])
     else:
-        raise ValueError(f"Invalid train/test split method: {model_params['splitMethod']}")
+        raise ValueError(f"Invalid train/test split method: {split_type}")
 
-    if parent_results is not None:
-        parent_filter = model_params['parentFilter']
-        parent_incl = model_params['parentResult']
-        samples_index = _samples_filter(parent_filter, samples, X, parent_results.base, parent_incl)
-        train_index = train_index & samples_index
-        test_index = None if test_index is None else (test_index & samples_index)
-        val_index = None if val_index is None else (val_index & samples_index)
-
-
-    model_dir = model_params['modelDir']
-    save_params = model_params['saveModels']
-    normal = model_params['targetNormalise'] or {}
-    y_train, y_test, y_val = split_data(y, train_index, test_index, val_index,
-                                        'target', model_dir, save_params, **normal)
-    data = {'train': {'X': {}, 'y': y_train},
-            'val':   {'X': {}, 'y': y_val},
-            'test':  {'X': {}, 'y': y_test}}
-    for source, xdata in X.items():
-        if source == 'aux':
-            normal = {}
+    if (isinstance(model_params['samplesFilter'], dict)
+        and model_params['samplesFilter']['apply'].lower().startswith('train')):
+        filter_ = filter_index(samples, model_params['samplesFilter'],
+                               match_sources=model_params['testSources'],
+                               train_index=train_index,
+                               random_seed=model_params['randomSeed'])
+        train_index = train_index & filter_
+    
+    if model_params['valSize'] > 0:
+        if split_type == 'byValue':
+            train_index, val_index = split_by_column(
+                    data=samples,
+                    test_size=model_params['valSize'],
+                    train_index=train_index,
+                    split_col=model_params['splitColumn'],
+                    stratify=model_params['splitStratify'],
+                    random_seed=model_params['randomSeed'])
         else:
-            normal = model_params['inputs'][source].get('normalise', {}) or {}
-        train, test, val = split_data(xdata, train_index, test_index, val_index,
-                                      source, model_dir, save_params, **normal)
-        data['train']['X'][source] = train
-        data['val']['X'][source] = val
-        data['test']['X'][source] = test
+            train_index, val_index = train_val_split(
+                    num_samples=samples.shape[0],
+                    val_size=model_params['valSize'],
+                    train_val_idx=train_index,
+                    random_seed=model_params['randomSeed'])
+    else:
+        val_index = None
+
+    data = _get_data(model_params, samples, X, y, parent_results,
+                     train_index, val_index, test_index)
     return data
 
 
@@ -718,25 +817,24 @@ def kfold_split(model_params, samples, X, y, parent_results):
 
     The following model parameters determine how to split the data. 
 
-    validationSet:
-        Indicates if a validation set should be created.
+    valSize:
+        If > 0, indicates if a validation set should be created.
     
     splitMethod:
       - random: samples are split randomly
-      - bySite: sites are split into test and training sites, then all
+      - byValue: sites are split into test and training sites, then all
         samples from the site are allocated to the respective set
       - NOTE: byYear cannot be used with k-fold splits
     
     splitFolds:
         The number of folds (``K``) required.
         
-    splitSizes:
+    valSize:
         The proportion or number of samples to allocate to validation
-        sets. This must contain two values (consistent with standard
-        splitting) but the first value is ignored.
+        sets.
     
     splitColumn:
-        The column in the samples containing the site. Used for bySite
+        The column in the samples containing the site. Used for byValue
         splits.
     
     splitStratify:
@@ -744,7 +842,7 @@ def kfold_split(model_params, samples, X, y, parent_results):
         is needed. Stratified splitting groups the sites by value and
         ensures each split contains a roughly equal proportion of each
         group. If None, stratified splittig is not used. Used for
-        bySite splits.
+        byValue splits.
     
     randomSeed:
         The seed for the random number generator.
@@ -776,140 +874,236 @@ def kfold_split(model_params, samples, X, y, parent_results):
         In this case, all lowest level values are ``None``.
     """
     def get_fold_indexes(model_params, samples):
-#        folds = range(model_params['splitFolds'])
-        val_size = model_params['splitSizes'][1] if model_params['validationSet'] else 0
         if model_params['splitMethod'] == 'random':
-            train_index, val_index, test_index = kfold_indexes(
+            train_index, test_index = kfold_indexes(
                     data=samples.reset_index(),
                     n_folds=model_params['splitFolds'],
                     test_folds=model_params['testFolds'],
                     split_col=samples.index.name or 'index',
                     stratify=False,
-                    val_size=val_size,
                     random_seed=model_params['randomSeed'])
-        else:   # model_params['splitMethod'] == 'bySite'
-            train_index, val_index, test_index = kfold_indexes(
+            folds = range(len(train_index))
+        elif model_params['splitMethod'] == 'byValue':
+            train_index, test_index = kfold_indexes(
                     data=samples,
                     n_folds=model_params['splitFolds'],
                     test_folds=model_params['testFolds'],
                     split_col=model_params['splitColumn'],
                     stratify=model_params['splitStratify'],
-                    val_size=val_size,
                     random_seed=model_params['randomSeed'])
-        folds = range(len(train_index))
-        if model_params['splitYear']:
-            year_folds = model_params.get('yearFolds', 0)
-            if year_folds <= 1:
-                for n in folds:
-                    train_index[n], val_index[n], test_index[n] = partition_by_year(
+            folds = range(len(train_index))
+        elif model_params['splitMethod'] == 'bySource' and model_params['testSources']:
+            train_index = {}
+            test_index = {}
+            folds = model_params['sourceNames']
+            for source in model_params['sourceNames']:
+                train_index[source], test_index[source] = split_by_source(
+                        data=samples,
+                        test_sources=[source],
+                        train_sources=None,
+                        random_seed=model_params['randomSeed'])
+        else:
+            raise ValueError(
+                f"testSources ({model_params['testSources']}) required with 'bySource' splits")
+
+        return folds, train_index, test_index
+
+    def get_yearfold_indexes(model_params, samples, folds, train_index, test_index):
+        sample_values = samples[model_params['splitColumn']] if model_params['splitMax'] else None
+        year_folds = model_params.get('yearFolds', 0)
+        if year_folds <= 1:
+            for n in folds:
+                train_index[n], test_index[n] = partition_by_year(
+                    samples[model_params['yearColumn']],
+                    model_params['splitYear'],
+                    train_index[n], test_index[n],
+                    num_years=year_folds,
+                    sample_values=sample_values,
+                    test_all_years=model_params['testAllYears'],
+                    train_adjust=model_params['trainAdjust'],
+                    test_adjust=model_params['testAdjust'])
+        else:
+            first_year = model_params['splitYear']
+            last_year = first_year + year_folds
+            year_folds = list(reversed(range(first_year, last_year)))
+            trn_ind = {}
+            tst_ind = {}
+            new_folds = []
+            for n in folds:
+                for year in year_folds:
+                    if len(folds) > 1:
+                        fold = f'{year}_{n:02d}' if isinstance(n, int) else f'{year}_{n}'
+                    else:
+                        fold = str(year)
+                    new_folds.append(fold)
+                    trn_ind[fold], tst_ind[fold] = partition_by_year(
                         samples[model_params['yearColumn']],
-                        model_params['splitYear'],
-                        train_index[n], val_index[n], test_index[n],
-                        num_years=year_folds,
+                        year,
+                        train_index[n], test_index[n],
+                        num_years=1,
+                        sample_values=sample_values,
                         test_all_years=model_params['testAllYears'],
                         train_adjust=model_params['trainAdjust'],
                         test_adjust=model_params['testAdjust'])
-            else:
-                first_year = model_params['splitYear']
-                last_year = first_year + year_folds
-                year_folds = list(reversed(range(first_year, last_year)))
-                trn_ind = {}
-                val_ind = {}
-                tst_ind = {}
-                new_folds = []
-                for n in folds:
-                    for year in year_folds:
-                        fold = f'{year}_{n:02d}'
-                        new_folds.append(fold)
-                        trn_ind[fold], val_ind[fold], tst_ind[fold] = partition_by_year(
-                            samples[model_params['yearColumn']],
-                            year,
-                            train_index[n], val_index[n], test_index[n],
-                            num_years=1,
-                            test_all_years=model_params['testAllYears'],
-                            train_adjust=model_params['trainAdjust'],
-                            test_adjust=model_params['testAdjust'])
-                folds = new_folds
-                train_index = trn_ind
-                val_index = val_ind
-                test_index = tst_ind
-        return folds, train_index, val_index, test_index
+            folds = new_folds
+            train_index = trn_ind
+            test_index = tst_ind
+
+        return folds, train_index, test_index
     
     def get_yearly_indexes(model_params, samples):
         train_index = {}
-        val_index = {}
         test_index = {}
         first_year = model_params['splitYear']
-        last_year = first_year + model_params['yearFolds']  # model_params['splitFolds']
+        last_year = first_year + model_params['yearFolds']
         folds = list(reversed(range(first_year, last_year)))
-        val_size = model_params['splitSizes'][1] if model_params['validationSet'] else 0
-        for year in range(first_year, last_year):
+        for year in folds:
             full_index = pd.Series([True] * samples.shape[0], index=samples.index)
-            train_index[year], val_index[year], test_index[year] = partition_by_year(
+            train_index[year], test_index[year] = partition_by_year(
                 samples[model_params['yearColumn']],
-                year, full_index, None, full_index,
+                year, full_index, full_index,
                 num_years=1,
                 test_all_years=model_params['testAllYears'],
                 train_adjust=model_params['trainAdjust'],
                 test_adjust=model_params['testAdjust'])
-            if val_size > 0:
-                train_index[year], val_index[year] = train_val_split(
-                        num_samples=samples.shape[0],
-                        val_size=val_size,
-                        train_val_idx=train_index,
+        return folds, train_index, test_index
+
+    def load_folds(samples, fold_params, val_data=None):
+        # Assumes only one source is used
+        fold_params = fold_params if isinstance(fold_params, (list, tuple)) else [fold_params]
+        model_dir = fold_params[0]
+        source = fold_params[1] if len(fold_params) > 1 else None
+
+        all_folds = {}
+        all_data = {}
+        all_indexes = {}
+        for ds in ['test', 'train', 'val']:
+            with open(os.path.join(model_dir, f'{ds}_folds.json')) as f:
+                all_folds[ds] = json.load(f)
+            all_data[ds] = []
+            for fold_name, fold_data in all_folds[ds].items():
+                zip_ = zip([fold_name]*len(fold_data), fold_data)
+                if fold_data and isinstance(fold_data[0], list):
+                    all_data[ds].extend([[x, y[0], y[1]] for (x, y) in zip_])
+                else:
+                    all_data[ds].extend([[x, source, y] for (x, y) in zip_])
+            all_data[ds] = pd.DataFrame(all_data[ds], columns=['Fold', 'Source', 'ID'])
+            all_data[ds] = all_data[ds].set_index(['Fold', 'Source']).sort_index()
+            all_indexes[ds] = {}
+            for fold in all_folds[ds].keys():
+                try:
+                    if ds == 'val' and not val_data:
+                        all_indexes[ds][fold] = None
+                    else:
+                        all_indexes[ds][fold] = samples.index.isin(
+                            all_data[ds].loc[fold, source].ID)
+                except:
+                    all_indexes[ds][fold] = np.array([False] * samples.shape[0])
+        folds = list(all_folds['train'].keys())
+
+        if (isinstance(model_params['samplesFilter'], dict)
+            and model_params['samplesFilter'].get('apply', 'all').lower().startswith('train')):
+            for fold in folds:
+                filter_ = filter_index(samples, model_params['samplesFilter'],
+                                       match_sources=model_params['testSources'],
+                                       train_index=all_indexes['train'][fold],
+                                       random_seed=model_params['randomSeed'])
+                all_indexes['train'][fold] = all_indexes['train'][fold] & filter_
+        return folds, all_indexes['train'], all_indexes['val'], all_indexes['test']
+    
+    def generate_folds(model_params, samples):
+        if model_params['splitMethod'] in ['random', 'byValue', 'bySource']:
+            if model_params['splitFolds'] > 1:
+                folds, train_index, test_index = get_fold_indexes(model_params, samples)
+            else:
+                train_index, test_index = [
+                    [idx] for idx in _get_split_indexes(model_params, samples)]
+                folds = range(1)
+
+            if model_params['testSources']:
+                temp = samples.reset_index(level='Source').Source
+                for fold in folds:
+                    test_index[fold][~temp.isin(model_params['testSources'])] = False
+
+            if model_params['splitYear']:
+                folds, train_index, test_index = get_yearfold_indexes(
+                    model_params, samples, folds, train_index, test_index)
+
+        elif model_params['splitMethod'] in ['byYear', None]:
+            model_params['yearFolds'] = model_params.get('yearFolds', 0) \
+                                        or model_params['splitFolds']
+            folds, train_index, test_index = get_yearly_indexes(model_params, samples)
+        else:
+            raise ValueError(f"Invalid train/test split method: {model_params['splitMethod']}")
+            
+        if (isinstance(model_params['samplesFilter'], dict)
+            and model_params['samplesFilter'].get('apply', 'all').lower().startswith('train')):
+            for fold in folds:
+                filter_ = filter_index(samples, model_params['samplesFilter'],
+                                       train_index=train_index[fold],
+                                       match_sources=model_params['testSources'],
+                                       random_seed=model_params['randomSeed'])
+                train_index[fold] = train_index[fold] & filter_
+
+        if isinstance(train_index, list):
+            val_index = [None for fold in folds]
+        else:
+            val_index = {fold: None for fold in folds}
+
+        if model_params['valSize'] > 0:
+            for fold in folds:
+                if model_params['splitMethod'] == 'byValue':
+                    train_index[fold], val_index[fold] = split_by_column(
+                            data=samples,
+                            test_size=model_params['valSize'],
+                            train_index=train_index[fold],
+                            split_col=model_params['splitColumn'],
+                            stratify=model_params['splitStratify'],
+                            random_seed=model_params['randomSeed'])
+                else:
+                    train_index[fold], val_index[fold] = train_val_split(
+                            num_samples=samples.shape[0],
+                            val_size=model_params['valSize'],
+                            train_val_idx=train_index[fold],
                         random_seed=model_params['randomSeed'])
         return folds, train_index, val_index, test_index
         
-    def save_folds(model_params, samples, train_index, val_index, test_index):
+    def save_folds(model_params, samples, folds, train_index, val_index, test_index):
+        def save_foldset(folds, fold_index, save_dir, save_file):
+            with open(os.path.join(save_dir, save_file), 'w') as f:
+                save_index = fold_index.copy()
+                for fold in folds:
+                    if save_index[fold] is None:
+                        save_index[fold] = []
+                    else:
+                        save_index[fold] = samples.index[save_index[fold]].tolist()
+                json.dump(save_index, f, indent=2)
+
         kfold_split.folds = folds
         kfold_split.indexes = {'train': train_index, 'val': val_index, 'test': test_index}
         if model_params.get('run', None) is None or model_params['resplit']:
             save_dir = model_params['modelDir']
         else:
             save_dir = os.path.dirname(model_params['modelDir'].rstrip('\\/'))
-        with open(os.path.join(save_dir, 'test_folds.json'), 'w') as f:
-            save_index = test_index.copy()
-            for fold in folds:
-                save_index[fold] = samples.index[save_index[fold]].tolist()
-            json.dump(save_index, f, indent=2)
+        save_foldset(folds, test_index, save_dir, 'test_folds.json')
+        if model_params['saveFolds'] or model_params['saveTrain']:
+            save_foldset(folds, train_index, save_dir, 'train_folds.json')
+        if model_params['saveFolds'] or model_params['saveValidation']:
+            save_foldset(folds, val_index, save_dir, 'val_folds.json')
     
-    def get_fold_data(fold, X, y, train_index, val_index, test_index, samples_index, model_params):
-        train_index = train_index[fold] & samples_index
-        test_index = None if test_index[fold] is None else (test_index[fold] & samples_index)
-        val_index = None if val_index[fold] is None else (val_index[fold] & samples_index)
-        model_dir = model_params['modelDir']
-        save_params = model_params['saveModels']
-        normal = model_params['targetNormalise'] or {}
-        y_train, y_test, y_val = split_data(y, train_index, test_index, val_index,
-                                            'target', model_dir, save_params, **normal)
-        data = {'train': {'X': {}, 'y': y_train},
-                'val':   {'X': {}, 'y': y_val},
-                'test':  {'X': {}, 'y': y_test}}
-        for source, xdata in X.items():
-            if source == 'aux':
-                normal = {}
-            else:
-                normal = model_params['inputs'][source].get('normalise', {}) or {}
-            train, test, val = split_data(xdata, train_index, test_index, val_index,
-                                          source, model_dir, save_params, **normal)
-            data['train']['X'][source] = train
-            data['val']['X'][source] = val
-            data['test']['X'][source] = test
-        return data
-
     if not kfold_split.folds or model_params['resplit']:
-        if model_params['splitMethod'] in ['random', 'bySite']:
-            folds, train_index, val_index, test_index = get_fold_indexes(model_params, samples)
-        elif model_params['splitMethod'] == 'byYear':
-            model_params['yearFolds'] = model_params.get('yearFolds', 0) \
-                                        or model_params['splitFolds']
-            folds, train_index, val_index, test_index = get_yearly_indexes(model_params, samples)
-        elif not model_params['splitMethod']:
-            raise ValueError(
-                'Invalid train/test split: "splitFolds" > 1 specified with no "splitMethod"')
+        get_folds = model_params.get('loadFolds')
+        if get_folds:
+            folds, train_index, val_index, test_index = load_folds(
+                samples, get_folds, model_params['valSize'])
         else:
-            raise ValueError(f"Invalid train/test split method: {model_params['splitMethod']}")
-        save_folds(model_params, samples, train_index, val_index, test_index)
+            folds, train_index, val_index, test_index = generate_folds(model_params, samples)
+
+        save_folds(model_params, samples, folds, train_index, val_index, test_index)
+        if isinstance(model_params['sourceNames'], list):
+            kfold_split.source = samples.reset_index().Source
+        if model_params['modelRuns'] < 0:
+            yield None
 
     else:
         folds = kfold_split.folds
@@ -917,27 +1111,15 @@ def kfold_split(model_params, samples, X, y, parent_results):
         val_index = kfold_split.indexes['val']
         test_index = kfold_split.indexes['test']
 
-    get_samples_index = False
-    if parent_results is None:
-        samples_index = np.array([True] * samples.shape[0])
-    else:
-        parent_filter = model_params['parentFilter']
-        parent_incl = model_params['parentResult']
-        try:
-            parent_data = parent_results.base
-            samples_index = _samples_filter(parent_filter, samples, X, parent_data, parent_incl)
-        except:
-            get_samples_index = True
-
+    all_folds = model_params['saveModels'] or model_params['saveTrain'] \
+                or model_params['saveValidation']
     for fold in folds:
-        if get_samples_index:
-            year = fold.split('_')[0]
-            parent_data = parent_results[f'{year}_base']
-            samples_index = _samples_filter(parent_filter, samples, X, parent_data, parent_incl)
-        data = get_fold_data(fold, X, y, train_index, val_index,
-                             test_index, samples_index, model_params)
-        yield (fold, data)
-
+        data = _get_data(model_params, samples, X, y, parent_results,
+                         train_index[fold], val_index[fold], test_index[fold], fold)
+        ytest = data['test']['y']
+        if all_folds or not ((ytest is None) or (ytest.shape[0] == 0)):
+            yield (fold, data)
+            
 # Add attributes to kfold_split to store the fold indexes between runs
 kfold_split.indexes = None
 kfold_split.folds = None

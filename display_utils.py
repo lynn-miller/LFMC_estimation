@@ -207,7 +207,7 @@ def results_summary(model, tests, ensembles, means, variances=None, std_devs=Non
     else:
         if separate_index:
             df_list = [tdf] + df_list
-            captions = [None] + captions
+            captions = [''] + captions
         heading = f'{", ".join([x for x in captions[:-1] if x])} and {captions[-1]} of {model} ' \
                   'model test results'
     print("\n" + heading)

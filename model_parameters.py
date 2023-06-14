@@ -3,8 +3,19 @@
 import json
 import os
 import pprint
+import warnings
 
 from copy import deepcopy
+
+class MissingKeys(KeyError):
+    def __init__(self, message):
+        self.message = message
+
+
+class ExtraKeys(KeyError):
+    def __init__(self, message):
+        self.message = message
+
 
 class ParamDict(dict):
     """A parameter dictionary
@@ -32,7 +43,7 @@ class ParamDict(dict):
     """
 
     def __init__(self, source=None):
-        parameters = self.set_defaults()
+        parameters = self.get_defaults()
         if isinstance(source, dict):   # Set parameters from a dictionary
             parameters.update(source)
         elif type(source) is str:  # Set parameters from a JSON string
@@ -41,7 +52,7 @@ class ParamDict(dict):
             parameters.update(json.load(source))
         super(ParamDict, self).__init__(parameters)
         
-    def set_defaults(self):
+    def get_defaults(self):
         """Returns the default parameter dictionary.
         
         Returns
@@ -93,6 +104,26 @@ class ParamDict(dict):
                 json.dump(self, f, indent=2)
         else:                                 # File stream provided, save parameters
             json.dump(self, file_stream, indent=2)
+        
+    def check_keys(self, level='print'):
+        level = level.lower()
+        warn_function = print if level == 'print' \
+                        else warnings.warn if level[:4] == 'warn' \
+                        else None
+        master_set = set(self.get_defaults().keys())
+        param_set = set(self.keys())
+        extra_keys = list(param_set - master_set)
+        missing_keys = list(master_set - param_set)
+        if missing_keys:
+            if warn_function:
+                warn_function('Warning! Missing parameters:', ', '.join(missing_keys))
+            else:
+                raise MissingKeys(missing_keys)
+        if extra_keys:
+            if warn_function:
+                warn_function('Warning! Extra parameters found:', ', '.join(extra_keys))
+            else:
+                raise ExtraKeys(missing_keys)
 
     def help(self, key=None):
         """Prints a help message
@@ -177,7 +208,7 @@ class ModelParams(ParamDict):
             self['modelName'] = model_name
             self.set_layers(**blocks)
         
-    def set_defaults(self):
+    def get_defaults(self):
         """Returns the default model parameters dictionary
         
         Returns
@@ -187,20 +218,23 @@ class ModelParams(ParamDict):
         """
         model_params = {
             'modelName': 'default_model',
+            'testName': None,
+            'test': None,
+            'run': None,
+            'fold': None,
             'description': '',
             'modelClass': 'LfmcModel',
             'modelDir': '',
             'tempDir': '',
             'diagnostics': False,
-            'dataSources': [],
             'restartRun': None,
             'derivedModels': None,
             'saveModels': False,
+            'saveFolds': False,
+            'saveRunResults': False,
             'saveTrain': None,
-            'saveValidation': True,
+            'saveValidation': False,
             'plotModel': True,
-            'multiSamples': None,
-            'deduplicate': False,
 
             'randomSeed': 1234,
             'modelSeed': 1234,
@@ -210,12 +244,16 @@ class ModelParams(ParamDict):
             
             # Multiprocessing parameters
             'maxWorkers': 1,
+            'asyncRuns': True,
             'deterministic': False,
             'gpuDevice': 0,
             'gpuList': [],
             'gpuMemory': 0,
 
             # Input data parameters
+            'dataSources': [],
+            'sourceNames': None,
+            'deduplicate': False,
             'inputs': {},
             'samplesFile': None,
             'samplesFilter': None,
@@ -225,27 +263,41 @@ class ModelParams(ParamDict):
             'targetColumn': None,
             'targetTransform': None,
             'targetNormalise': None,
+            'targetMap': None,
             'classify': False,
             'numClasses': 0,
 
+            # Architecture blocks/layers parameters
+            'blocks': {},
+
             # Data splitting parameters
             'splitMethod': None,
-            'splitSizes': (0.33, 0.067),
+            'testSize': 0,
+            'valSize': 0,
             'splitColumn': None,
             'splitStratify': None,
             'splitYear': None,
             'splitFolds': 0,
+            'splitMax': False,
             'testFolds': 1,
             'yearColumn': None,
-            'yearFolds': None,
+            'yearFolds': 0,
             'testAllYears': False,
             'trainAdjust': 0,
             'testAdjust': 0,
+            'testSources': None,
+            'trainSources': None,
+            'loadFolds': None,
+            
+            # Domain Adaptation Parameters
+            'reweightSource': None,   # [source, target]
+            'dannWeight': 0,
             
             # Model chaining parameters
-            'parentModel': None,
-            'parentFilter': None,
-            'parentResult': False,
+            'pretrainedModel': None,
+            'transferModel': None,
+            'onehotEncoder': None,
+            'commonNormalise': True,
             
             # Keras common parameters
             'convPadding': 'valid',
@@ -255,7 +307,6 @@ class ModelParams(ParamDict):
             'batchNormalise': False,
             'dropoutRate': 0,
             'regulariser': None,
-            'validationSet': False,
             'earlyStopping': False,
 
             # Fitting parameters
@@ -263,7 +314,10 @@ class ModelParams(ParamDict):
             'evaluateEpochs': None,
             'batchSize': 32,
             'shuffle': True,
+            
+            # Diagnostic parameters
             'verbose': 0,
+            'tensorBoard': False,
 
             # Keras methods
             'optimiser': 'adam',
@@ -271,6 +325,10 @@ class ModelParams(ParamDict):
             'initialiser': 'he_normal',
             'loss': None,
             'metrics': None,
+            'checkpoint': False,
+            'enableXla': True,
+            'mixedPrecision': 'mixed_float16',
+            'stepsPerExec': 100,
         }
         return model_params
 
@@ -311,12 +369,12 @@ class ModelParams(ParamDict):
         None.
         """
         def block_parms(key):
-            if key == 'fc_layers':
-                return ['fc', 'Dense']
-            elif key == 'conv_layers':
-                return ['conv', 'Conv']
+            block_name = key.split('_')[0]
+            if block_name.endswith('Conv'):
+                block_type = 'Conv'
             else:
-                return [key.split('_')[0] + 'Conv', 'Conv']    
+                block_type = 'Dense'
+            return [block_name, block_type]
 
         for key, block_params in kwargs.items():
             block_name, block_type = block_parms(key)
@@ -351,6 +409,14 @@ class ModelParams(ParamDict):
         -------
         None.
         """
+        # Add the block and set parameters to defaults
+        self['blocks'][block_name] = [self.get_layer_params(block_type) for _ in range(num_layers)]
+        # Update block with supplied parameters
+        if block_params:
+            for idx, layer in enumerate(self['blocks'][block_name]):
+                layer.update(block_params[idx])
+    
+    def get_layer_params(self, layer_type):
         conv_params = {
             'filters': 8,    # Convolution filters
             'kernel': 5,     # Convolution kernel size
@@ -365,17 +431,12 @@ class ModelParams(ParamDict):
             'bnorm': self['batchNormalise'],
         }
 
-        # Add the block and set parameters to defaults
-        if block_type == 'Conv':
-            self[block_name] = [conv_params.copy() for _ in range(num_layers)]
-        elif block_type == 'Dense':
-            self[block_name] = [dense_params.copy() for _ in range(num_layers)]
+        if layer_type == 'Conv':
+            return deepcopy(conv_params)
+        elif layer_type == 'Dense':
+            return deepcopy(dense_params)
         else:
             raise ValueError
-        # Update block with supplied parameters
-        if block_params:
-            for idx, layer in enumerate(self[block_name]):
-                layer.update(block_params[idx])
     
     def add_input(self, name, input_params, data_type='ts'):
         """ Adds an input to the model parameters.
@@ -434,159 +495,228 @@ class ModelParams(ParamDict):
     _param_help = {
         'general':        'Dictionary of all parameters used to build an LFMC model. For more '
                           'help run ModelParams().help("parameter").\nAvailable parameters are:',
-        'modelName':      'A name for the model; must be a valid Keras model name',
-        'description':    'A free-format description of the model - only used for documentation',
-        'modelClass':     'The Class for the model. This should be a sub-class of LfmcModel '
+        'modelName':      'str: A name for the model; must be a valid Keras model name.',
+        'testName':       'str: An optional name for the test (e.g. when running an experiment). '
+                          'If not set, will be set by "run_experiment".',
+        'test':           'int: An optional test number (e.g. when run as part of an experiment). '
+                          'Should not  be expliclty set as it is set by "run_experiment".',
+        'run':            'int: An optional run number (e.g. when a test has multiple runs). '
+                          'Should not  be expliclty set as it is set by "create_models".',
+        'fold':           'str: An optional fold name (e.g. when a test/run has folds).'
+                          'Should not  be expliclty set as it is set by "run_kfold_models".',
+        'description':    'str: A free-format description of the model, used for documentation.',
+        'modelClass':     'str: The Class for the model. This should be a sub-class of LfmcModel '
                           'and defined in the lfmc_model module. "LfmcTempCnn" is currently the '
                           'only valid setting.',
-        'modelDir':       'A directory for all model outputs',
-        'tempDir':        'Directory used to store temporay files such as checkpoints',
-        'diagnostics':    'Set to True to display data and model diagnostic details',
-        'dataSources':    'A list of the data sources used. If an empty list, the full list of '
-                          'data sources the modelClass will process is assumed.',
-        'restartRun':     'Used to restart a failed test. Specifies which run to start at.',
-        'derivedModels':  'The derived models to create and evaluate. A dictionary where the keys'
-                          ' are the model names and the values are a dictionary of parameters, '
-                          'including the model type (best, merge, or ensemble). e.g. to create a '
-                          'model called "merge10" by merging the last 10 checkpoints, set to '
-                          '"{\'merge10\': {\'type\': \'merge\', \'models\': 10}}".  If "falsy", '
-                          'no derived models are created. If "truthy" (the default), the standard '
-                          'set of derived models are created.',
-        'saveModels':     'Set to True, a derived model name or a list of derived model names to '
-                          'save the models in h5 format. If True the base model is saved. If '
-                          '"falsy", no models are saved.',
-        'saveTrain':      'Set to True to save all training output or False to save no training '
-                          'output. The default is to save training prediction statistics only.',
-        'saveValidation': 'Set to True (default) to save validation predictions. Note: if there '
-                          'is validation data, the validation statistics are always saved. '
-                          'Ignored if there is no validation data.',
-        'plotModel':      'Set to True (default) to create a model plot.',
-        'multiSamples':   'If the model is to be trained/evaluated on more than one set of '
+        'modelDir':       'str: A directory for all model outputs.',
+        'tempDir':        'str: Directory used to store temporay files such as checkpoints.',
+        'diagnostics':    'bool: Set to True to display data and model diagnostic details.',
+        'dataSources':    'list of str: A list of the data sources used. If an empty list, the '
+                          'full list of data sources the modelClass will process is assumed.',
+        'restartRun':     'int: Used to restart a failed test. Specifies which run to start at.',
+        'derivedModels':  'dict or bool: The derived models to create and evaluate. A dictionary '
+                          'where the keys are the model names and the values are a dictionary of '
+                          'parameters, including the model type (best, merge, or ensemble). e.g. '
+                          'to create a model called "merge10" by merging the last 10 checkpoints, '
+                          'set to "{\'merge10\': {\'type\': \'merge\', \'models\': 10}}".  If '
+                          '"falsy", no derived models are created. If "truthy" (the default), the '
+                          'standard set of derived models are created.',
+        'saveModels':     'bool, str or list: Set to True, a derived model name or a list of '
+                          'derived model names to save the models in h5 format. If True the base '
+                          'model is saved. If "falsy", no models are saved.',
+        'saveTrain':      'bool: Set to True to save all training output or False to save no '
+                          'training output. The default (None) is to save training prediction '
+                          'statistics only.',
+        'saveValidation': 'bool: Set to True to save validation predictions. Note: if there is '
+                          'validation data, the validation statistics are always saved. Ignored if '
+                          'there is no validation data.',
+        'plotModel':      'bool: Set to True (default) to create a model plot.',
+        'sourceNames':    'list: If the model is to be trained/evaluated on more than one set of '
                           'training data, a list specifying the key/name for each set of samples. '
                           'If used, each "*Filename" parameter should specify either a single '
-                          'file or a list of files the same length as "multiSamples". If the '
+                          'file or a list of files the same length as "sourceNames". If the '
                           '"*Filename" parameter is a list of files, the data loaded from each '
-                          'file will have a value from "multiSamples" prepended to each row-ID. '
+                          'file will have a value from "sourceNames" prepended to each row-ID. '
                           'If a single file, the data from the file will be replicated for each '
-                          'entry in "multiSamples". Defaults to "None", meaning a single set of '
+                          'entry in "sourceNames". Defaults to "None", meaning a single set of '
                           'samples is used, and if any of the "*Filename" parameters are lists, '
                           'the data is concatenated column-wise.',
-        'deduplicate':    'Remove duplicates from the training data before training the model. '
-                          'For each set of duplicated samples, the target values are adjusted to '
-                          'be the mean of the set. Currently this can only be used if a single '
-                          'source is specified.',
-        'randomSeed':     'Number used to set all random seeds (for random, numpy and tensorflow)',
-        'modelRuns':      'Number of times to buid and run the model',
-        'resplit':        'True: redo the test/train splits on each run; False: use the same '
+        'deduplicate':    'bool: Remove duplicates from the training data before training the '
+                          'model. For each set of duplicated samples, the target values are '
+                          'adjusted to be the mean of the set. Currently this can only be used if '
+                          'a single source is specified.',
+        'randomSeed':     'int: Number used to set the random seed for train/test splits. Also used'
+                          ' in place of "modelSeed" if this is not set. Defaults to 1234.',
+        'modelSeed':      'int: Number used to set random seeds for tensorflow. Defaults to 1234.',
+        'modelRuns':      'int: Number of times to build and run the model.',
+        'resplit':        'bool: True: redo the test/train splits on each run; False: use the same '
                           'test/train split for each run',
-        'seedList':       'A list of random seeds used to seed each run if modelRuns > 1. If the '
-                          'list size (n) is less than the number of runs, then only the first n '
-                          'runs will be seeded. If the list is empty (and modelRuns > 1) the '
-                          'randomSeed will be used to seed the first run, all other runs will be '
-                          'unseeded. Extra seeds (n > modelRuns) are ignored.',
-        'maxWorkers':     'Specifies the maximum number of multiprocess workers to use. Setting '
-                          'this > 1 allows parallel processing of folds or runs.',
-        'gpuDevice':      'Specifies which GPU device to use. Ignored if "gpuList" is specified.',
-        'gpuList':        'Specifies a list of GPU devices. These are assigned to the '
+        'seedList':       'list of int: A list of random seeds used to seed tensorflow for each run '
+                          'if modelRuns > 1. If the list size (n) is less than the number of runs, '
+                          'then only the first n runs will be seeded. If the list is empty (and '
+                          'modelRuns > 1) the modelSeed will be used to seed the first run, all '
+                          'other runs will be unseeded. Extra seeds (n > modelRuns) are ignored.',
+        'maxWorkers':     'int: Specifies the maximum number of multiprocess workers to use. '
+                          'Setting this > 1 allows parallel processing of folds or runs.',
+        'deterministic':  'bool: Set to "True" for a fully deterministic test. This will prevent '
+                          'GPUs from being used and overrides the "gpu*" parameters.',
+        'gpuDevice':      'int: Specifies which GPU device to use. Ignored if "gpuList" is '
+                          'specified.',
+        'gpuList':        'list of int: Specifies a list of GPU devices. These are assigned to the '
                           'multiprocess workers in a round-robin manner. Each entry in the list '
                           'can be one GPU device number (the worker will use a single GPU) or a '
                           'list of device numbers (the worker will use all these GPUs).',
-        'gpuMemory':      'Specifies the GPU memory to use for each worker. The Tensorflow '
+        'gpuMemory':      'int: Specifies the GPU memory to use for each worker. The Tensorflow '
                           'default is used if not set or set to a "falsy" value',
-        'inputs':         'A dictionary where the keys are the input names and values are '
-                          'dictionaries with these keys:\n'
-                          'filename:  Required. Full path name of the file containing the data or\n'
-                          '           a list of file names. See the "multiSamples" parameter for \n'
-                          '           how a list is handled.\n'
-                          'channels:  Required for time series inputs. Number of channels in the \n'
-                          '           dataset.\n'
-                          'normalise: Optional. A dictionary containing the method to use to \n'
-                          '           normalise the data, plus any parameters required by this\n'
+        'inputs':         'dict: The keys are the input names and values are dictionaries with '
+                          'these keys:\n'
+                          'filename:  str or list of str; required. Full path name of the file\n'
+                          '           containing the data or a list of file names. See the\n'
+                          '           "sourceNames" parameter for how a list is handled.\n'
+                          'channels:  int; required for time series inputs. Number of channels in\n'
+                          '           the dataset.\n'
+                          'normalise: dict; optional. A dictionary containing the method to use\n'
+                          '           to normalise the data, plus any parameters required by this\n'
                           '           method.\n'
-                          'start:     Optional. Time series start. The offset from end of the \n'
-                          '           input timeseries.\n'
-                          'end:       Optional. Time series end. The offset from end of the input\n'
-                          '           timeseries. Set to "None" to specify the end of the timeseries.',
-        'samplesFile':    'Full path name of the file containing the auxiliary data and target or '
-                          'a list of file names. See the "multiSamples" parameter for how a list '
-                          'is handled.',
-        'auxColumns':     'The columns from the auxilary dataset that should be used as the '
-                          'auxiliary input to the model. Either an integer, in which case the'
-                          'last auxColumns are used, or a list of the column names to use. The '
+                          'start:     int; optional. Time series start. The offset from end of\n'
+                          '           the input timeseries.\n'
+                          'end:       int: optional. Time series end. The offset from end of the\n'
+                          '           input timeseries. Set to "None" to specify the end of the\n'
+                          '           timeseries.',
+        'samplesFile':    'str or list of str: Full path name of the file containing the auxiliary'
+                          ' data and target or a list of file names. See the "sourceNames" '
+                          'parameter for how a list is handled.',
+        'samplesFilter':  'list or tuple: How to filter the samples. If not "None", should be a '
+                          'list or tuple with at least two elements - the filter column and filter '
+                          'method. Filter methods can be either a Pandas Series method or '
+                          '"matchTest" (which filters all samples based on the filter column '
+                          'values for the "testSource" samples). Any other elements are parameters '
+                          'required by the filter method.',
+        'auxColumns':     'int or list or str: The columns from the auxilary dataset that should '
+                          'be used as the auxiliary input to the model. If int: the last auxColumns'
+                          ' in the dataset are used. If a list: the column names to use. The '
                           'columns should not include any columns to be one-hot encoded.',
-        'auxAugment':     'Indicates if the auxiliary data should be augmented with the last day '
-                          'of the time series data sources. Valid values are "True", "False", or '
-                          'a list of data sources to use to augment the auxiliaries.',
-        'auxOneHotCols':  'A list of columns in the auxiliary dataset that should be one-hot '
-                          'encoded and added to the model auxiliary data. These columns should '
-                          'not be included in auxColumns.'
-                          'last auxColumns are used, or a list of the column names to use.',
-        'targetColumn':   'Column name (in the auxiliary data) of the target column',
-        'splitMethod':    '"random" for random train/test splits, "byYear" to split data by '
-                          'sample collection year (yearly scenario), "bySite" to split the data '
-                          'by sample collection site (out-of-site scenario)',
-        'splitSizes':     'A tuple specifying the proportion of data or sites to use for test '
-                          'and validation sets for the "random" and "bySite" split methods. If no '
-                          'validation set is used, only one value is needed but must be a tuple. '
-                          'When using the "byYear" method, this is only relevant when a validation'
-                          ' set is wanted; in this case the first value is ignored and the second '
-                          'value specifies the proportion of training data to use for the '
-                          'validation set.',
-        'siteColumn':     'Column name (in the auxiliary data) of the sample collection site.',
-        'splitStratify':  'Specifies the column (in the auxiliary data) to use for stratified '
+        'auxAugment':     'bool or list of str: Indicates if the auxiliary data should be '
+                          'augmented with the last day of the time series data sources. Valid '
+                          'values are "True", "False", or a list of data sources to use to augment '
+                          'the auxiliaries.',
+        'auxOneHotCols':  'list of str: A list of columns in the auxiliary dataset that should be '
+                          'one-hot encoded and added to the model auxiliary data. These columns '
+                          'should not be included in auxColumns.',
+        'targetColumn':   'str: Column name (in the auxiliary data) of the target column',
+        'targetTransform':'list or tuple: How to transform the target variable. If not "None", '
+                          'should be a list or tuple. The first element is the transform method. '
+                          'Any other elements are parameters required by the transform method.',
+        'targetNormalise':'dict; optional. A dictionary containing the method to use to normalise '
+                          'the data, plus any parameters required by this method.\n',
+        'classify':       'bool: Set to "True" to build a classifier (instead of a regression '
+                          'model).',
+        'numClasses':     'int: If classifying, the number of target classes.',
+        'blocks':         'dict: The Keras model blocks. The keys are the block names. '
+                          'Convolutional blocks end with "Conv"; anything else is a dense block. '
+                          'Values are lists of dictionaries. The length of the list is the number '
+                          'of layers in the block. The dictionaries have these optional keys:\n'
+                          'filters:  int; Conv layers; default 8. The number of convolutional\n'
+                          '          filters in the layer.'
+                          'kernel:   int; Conv layers; default 5. The kernel width.'
+                          'stride:   int; Conv layers; default 1. The convolutional size.'
+                          'dilation: int; Conv layers; default 1. The convolutinal dilation.'
+                          'bnorm:    bool; Both layer types; default "batchNormalise".'
+                          'poolSize: int; Conv layers; default 0. The local pooling size. 0\n'
+                          '          disables pooling for the layer.'
+                          'units:    int; Dense layers; default 512. Number of units in the layer.',
+        'splitMethod':    'str: "random" for random train/test splits, "byYear" to split data by '
+                          'sample collection year, "byValue" to split the data by column values, '
+                          '"bySource" to split the data by "sourceNames" source.',
+        'testSize':       'float or int: Specifies how much sample data to use for the test data '
+                          'for the "random" and "byValue" split methods. If a float, this is the '
+                          'proportion of the full dataset ("random" splits) or split column values '
+                          '("byValue" splits). If an int, this is the number of samples or split '
+                          'column values. Ignored if "splitFolds" > 0.',
+        'valSize':        'float or int: Specifies how much of the training data is reserved for '
+                          'the validation set. If float, this is the proportion of the training '
+                          'data to reserve. If int, this in the number of validation samples '
+                          'required.',
+        'splitColumn':    'str: Column name (in the auxiliary data) used for "byValue" train/test '
+                          'splits. All samples with the same value will be in the same subset.',
+        'splitStratify':  'str: Specifies the column (in the auxiliary data) to use for stratified '
                           'splits, if these are required. Set to False to disable stratified '
                           'splits. Ignored for "byYear" splits.',
-        'yearColumn':     'For "byYear" splits, specifies the column (in the auxiliary data) of '
-                          'the sample collection year.',
-        'splitFolds':     'With "random" or "bySite" splitting: if > 1, k-fold splitting will be '
-                          'used. If False, 0 or 1, a single random split will be made. With '
-                          '"byYear" splitting: if >= 1, the specified number of yearly splits '
-                          'will be used (so if "splitFolds" is 4 and "splitYear" is 2014, 4 '
+        'splitYear':      'int: For "byYear" splits, the first year to year as test data. For '
+                          '"random" or "byValue" splits, data in the training set for this year or '
+                          'later is discarded, as is data in the test set for before this year.',
+        'splitFolds':     'int: With "random" or "byValue" splitting: if > 1, k-fold splitting will'
+                          ' be used. If False, 0 or 1, a single random split will be made. Note: If'
+                          ' "byYear" splitting is used and "yearFolds" is not set, this value will '
+                          'be used instead.',
+        'testFolds':      'int: If "splitFolds" > 1, the number of folds to include in the test '
+                          'sets. Must be less than "splitFolds".',
+        'yearColumn':     'str: For "byYear" splits, specifies the column (in the auxiliary data) '
+                          'of the sample collection year.',
+        'yearFolds':      'int: With "byYear" splitting: if >= 1, the specified number of yearly '
+                          'splits will be used (so if "yearFolds" is 4 and "splitYear" is 2014, 4 '
                           'models will be built, for years 2014, 2015, 2016, and 2017. If False '
                           'or 0, a single split is made and all data for or after the "splitYear" '
                           'is used as test data.',
-        'splitYear':      'For "byYear" splits, the first year to year as test data. For "random" '
-                          'or "bySite" splits, data in the training set for this year or later is '
-                          'discarded, as is data in the test set foe before this year.',
-        'trainAdjust':    'For "byYear" splits, The number of days to adjust the end date of the '
-                          'training and validation sets. E.g. "90" will remove all samples within '
-                          '90 days of the end of the training/validation sets. These samples are '
-                          'discarded (NOT added to the test set). The default is 0.',
-        'testAdjust':     'For "byYear" splits, the number of days to adjust the start and end '
-                          'dates of the test set. A postive number will shift the dates forward '
+        'testAllYears':   'bool: If "True", any year filtering is not applied to the test data and '
+                          'only applied to training and validation data.',
+        'trainAdjust':    'int: For "byYear" splits, The number of days to adjust the end date of '
+                          'the training and validation sets. E.g. "90" will remove all samples '
+                          'within 90 days of the end of the training/validation sets. These '
+                          'samples are discarded (NOT added to the test set). The default is 0.',
+        'testAdjust':     'int: For "byYear" splits, the number of days to adjust the start and end'
+                          ' dates of the test set. A postive number will shift the dates forward '
                           'and a negative number will shift them backwards. E.g. setting'
                           '"test_adjust" to "90", "year" to "2014" and "num_year" to "1" will '
                           'result in a test set containing samples from "01-Apr-2014" to '
                           '"31-Mar-2015". Samples in the adjustment period (e.g. "01-Jan-2014" to '
                           '"31-Mar-2014") are discarded (NOT added to the training or validation '
                           'sets). The default is 0.',
-        'convPadding':    'Specifies the Keras padding value for the convolutional layers. Set to '
+        'testSources':    'list: The list of sources to use for test data. Mandatory if '
+                          '"splitMethod" is "bySource".',
+        'trainSources':   'list: The list of sources to use for training data. If None and '
+                          '"splitMethod" is "bySource", then all non-test sources will be used as '
+                          'training sources.',
+        'parentModel':    'int: If not "None", specifies which test is the "parent" of this test. '
+                          'Parent training predictions are available as an input to the model.',
+        'parentFilter':   'list or tuple: How to filter the samples based on the parent results. '
+                          'If not "None", should be a list or tuple with at least two elements - '
+                          'the filter column and filter method. Any other elements are parameters '
+                          'required by the filter method.',
+        'parentResult':   'bool: If "True" then include the training predictions from the '
+                          '"parentModel" as an input to the model.',
+        'pretrainedModel':'int or str: If not "None" then this specifies the previously trained '
+                          'and saved model to load and continue training. If an int, then the '
+                          'model created for that test in the current experiment is loaded. If a '
+                          'str, then it should specify the directory where the model to be loaded '
+                          'is saved. If both the directory and the current test contain runs '
+                          'and/or folds, the model from the corresponding run/fold is loaded, '
+                          'otherwise the model at the specified location is loaded.',
+        'convPadding':    'str: Specifies the Keras padding value for the convolutional layers. Set'
+                          ' to "valid" for no padding or "same" for padding.',
+        'poolPadding':    'str: Specifies the Keras padding value for the pooling layers. Set to '
                           '"valid" for no padding or "same" for padding.',
-        'poolPadding':    'Specifies the Keras padding value for the pooling layers. Set to '
-                          '"valid" for no padding or "same" for padding.',
-        'batchNormalise': "Default setting for including a batch normalisation step in a block, "
-                          "can be overriden for a block using the block's bnorm setting",
-        'dropoutRate':    "The dropout rate to use for all layers in the model",
-        'regulariser':    'A string representation of the regulariser to use in all model layers.'
-                          ' If the string starts with "keras", it will be interpreted as a call '
-                          'to a keras regularizer function.',
-        'validationSet':  'Indicates if a validation set should be used when training the model',
-        'earlyStopping':  'If False or 0, early stopping is not used. Otherwise early stopping '
-                          'is used and the value used as the patience setting.',
-        'epochs':         'Number of training epochs.',
-        'batchSize':      'Training batch size.',
-        'shuffle':        'Indicates if the training data should be shuffled between epochs.',
-        'verbose':        'Sets the verbosity level during training.',
-        'optimiser':      'The Keras optimiser. If the value starts with "keras", it will be '
+        'batchNormalise': "bool: Default setting for including a batch normalisation step in a "
+                          "block, can be overriden for a block using the block's bnorm setting",
+        'dropoutRate':    "float: The dropout rate to use for all layers in the model",
+        'regulariser':    'str: A string representation of the regulariser to use in all model '
+                          'layers. If the string starts with "keras", it will be interpreted as a '
+                          'call to a keras regularizer function.',
+        'earlyStopping':  'int: If False or 0, early stopping is not used. Otherwise early stopping'
+                          ' is used and the value used as the patience setting.',
+        'epochs':         'int: Number of training epochs.',
+        'evaluteEpochs':  'int: If not "None", the model is evaluated every "evaluateEpoch" '
+                          'epochs. Results are available on the model "epoch_*_predicts" and '
+                          '"epoch_*_stats" attributes and stored in the "epochxxx" directories.',
+        'batchSize':      'int: Training batch size.',
+        'shuffle':        'bool: Indicates if the training data should be shuffled between epochs.',
+        'verbose':        'int: Sets the verbosity level during training.',
+        'optimiser':      'str: The Keras optimiser. If the value starts with "keras", it will be '
                           'interpreted as code to create a Keras optimizer object.',
-        'activation':     'The activation function to use for all model layers',
-        'initialiser':    'The function used to initialise the model weights',
-        'loss':           'The loss function to use when training the model.',
-        'metrics':        'A list of metrics to be evaluated at each checkpoint.',
-        'conv':           'A list of convolutional parameter sets, each entry in the list '
-                          'corresponds to a convolutional layer that will be added to the model',
-        'fc':             'A list of fully connected parameter sets, each entry in the list '
-                          'corresponds to a fully connected layer that will be added to the model',
+        'activation':     'str: The activation function to use for all model layers',
+        'initialiser':    'str: The function used to initialise the model weights',
+        'loss':           'str: The loss function to use when training the model.',
+        'metrics':        'list of str: A list of metrics to be evaluated at each checkpoint.',
     }
 
 
@@ -626,7 +756,7 @@ class ExperimentParams(ParamDict):
         if source is None:
             self['name'] = experiment_name
         
-    def set_defaults(self):
+    def get_defaults(self):
         """Returns the default experiment parameters dictionary
         
         Returns
@@ -646,6 +776,60 @@ class ExperimentParams(ParamDict):
         }
         return experiment_params
 
+    def add_test_input(self, test, name, input_params, data_type='ts'):
+        """ Adds an input to the model parameters.
+        
+
+        Parameters
+        ----------
+        name : str
+            Input name.
+        input_params : dict
+            Dictionary of parameters. Valid keys are:
+            'filename': Required.
+                Full path name of the file containing the data for a
+                list of file names.
+            'channels': Required for time series inputs.
+                Number of channels in the dataset.
+            'includeChannels': Optional for time series inputs.
+                A list of channels to include in the prepared data. By
+                default, all channels are included.
+            'normalise': Optional. 
+                A dictionary containing the method to use to normalise
+                the data, plus any parameters required by this method.
+            'start': Optional.
+                Time series start. The offset from the start of the
+                input time series.
+            'end': Optional.
+                Time series end. The offset from the end of the input
+                time series. "None" means no end offset.
+        data_type : str, optional
+            Input type. Specify 'ts' (the default) if the input is a
+            time series. This ensures a default value for all the time
+            series input parameters (channels/start/end) is set. If any
+            other value is specified, no defaults for these parameters
+            are set, although they may be provided in the input_params.
+
+        Returns
+        -------
+        None.
+
+        """
+        all_defaults = {'filename': None, 'normalise': None,}
+        ts_defaults = {
+            'filename': None,
+            'channels': None,
+            'includeChannels': [],
+            'normalise': {'method': 'minMax', 'percentiles': 2},
+            'start': None,
+            'end': None,
+            }
+        self.tests[test].set_default('inputs', {})
+        self.tests[test]['inputs'][name] = deepcopy(all_defaults)
+        if data_type == 'ts':
+            self.tests[test]['inputs'][name].update(deepcopy(ts_defaults))
+        self.tests[test]['inputs'][name].update(input_params)
+
     _param_help = {
         'general':        'Dictionary of all parameters used to run an LFMC experiment. A simple '
                           'example of experiment parameters is:\n\n'
@@ -661,8 +845,8 @@ class ExperimentParams(ParamDict):
                           ' "restart": 0}\n\n'
                           'For more help run ExperimentParams().help("parameter").\nAvailable '
                           'parameters are:',
-        'name':           'A name for the experiment; must be a valid directory name',
-        'description':    'A description of the experiment. Used only for documentation.',
+        'name':           'str: A name for the experiment; must be a valid directory name',
+        'description':    'str: A description of the experiment. Used only for documentation.',
         'blocks':         'A dictionary where the keys are the model blocks used by the '
                           'experiment tests and the values are the block parameters. It must '
                           'include the blocks specified in the tests. Any other blocks are '
@@ -671,25 +855,22 @@ class ExperimentParams(ParamDict):
                           'list will be used for the first layer in the block, etc. For each '
                           'block, the layer parameter "numLayers" is required either here or for '
                           'each test and specifies how many layers are required in this block.',
-        'tests':          'A list of dictionaries. Each dictionary represents a test and contains '
-                          'the changes for the test that need to be made to the experiment model '
-                          'parameters. Block parameters should be specified as a list. The first '
-                          'entry in the list will be used for the first layer in the block, etc.'
-                          'For each block, the layer parameter "numLayers" is required either '
-                          'here or on the appropriate "blocks" entry and specifies how many '
-                          'layers are required in this block.',
-        'testNames':      'A list of the test names. Optional, but if used the list should be '
-                          'the same length as "tests".',
-        'restart':        'When restarting an experiment, specifies the test number (zero-based) '
+        'tests':          'list of dict: A list of dictionaries. Each dictionary represents a test '
+                          'and contains an optional test name ("testName") and the changes that '
+                          'need to be made to the experiment model parameters for the test. '
+                          'Only changed parameters need to be specified. To remove ',
+        'testNames':      'list of str: A list of the test names. Optional, but if used the list '
+                          'should be the same length as "tests".',
+        'restart':        'int: When restarting an experiment, specifies the test number (zero-based) '
                           'at which the experiment run should start. If "None" or "False", the '
                           'experiment will run from the start and a check is made to ensure the '
                           'model directory does not exist.',
-        'rerun':          'A list of the test numbers (zero-based) to re-run. If "None", "False" '
-                          'or "[]", the experiment will run from the start. Note: if both "rerun" '
-                          'and "restart" are specified (i.e. not "None", "False" or "[]"), '
-                          '"rerun" will be ignored.',
-        'resumeAllTests': 'If "True", any "restartRun" in the model parameters will be applied to '
-                          'all tests. If "False" (the default), the "restartRun" will be applied '
-                          'to the first test only.',
+        'rerun':          'int or list of int: A list of the test numbers (zero-based) to re-run. '
+                          'If "None", "False" or "[]", the experiment will run from the start. '
+                          'Note: if both "rerun" and "restart" are specified (i.e. not "None", '
+                          '"False" or "[]"), "rerun" will be ignored.',
+        'resumeAllTests': 'bool: If "True", any "restartRun" in the model parameters will be '
+                          'applied to all tests. If "False" (the default), the "restartRun" will '
+                          'be applied to the first test only.',
     }
                 

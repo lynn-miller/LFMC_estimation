@@ -1,20 +1,21 @@
 """Functions to build and evaluate LFMC models"""
 
 import contextlib
+import json
 import numpy as np
 import os
 import pandas as pd
 import warnings
 
 from copy import deepcopy
-from multiprocess import get_context, Manager
+from multiprocess import get_context, Manager, BoundedSemaphore
 from time import sleep
 
 from model_list import ModelList
 from model_parameters import ModelParams
-from data_splitting_utils import train_test_split, kfold_split
-from data_prep_utils import reshape_data, create_onehot_enc
-from model_utils import gen_test_results, create_ensembles, merge_kfold_results
+from data_splitting_utils import train_test_split, kfold_split, filter_index #, random_split
+from data_prep_utils import reshape_data, create_onehot_enc, set_thresholds, ordinal_encoder
+from results_utils import gen_test_results, create_ensembles, merge_kfold_results
 from model_utils import train_test_model
 from display_utils import print_heading
 
@@ -45,56 +46,82 @@ def _train_test_subprocess(pool, **kwargs):
         determined by ``model_params['modelClass']`` and defaults to
         ``LfmcModel``.
     """
-    def success(model):
-        name = model.params['modelName']
-        min_loss = model.train_result['minLoss']
-        run_time = model.train_result['runTime']
+    def success(model, release_semaphore=True):
+        if release_semaphore:
+            if model.params['diagnostics']:
+                print(f"Releasing semaphore for model {kwargs['model_params']['modelName']}")
+            _train_test_subprocess.semaphore.release()
         if model.params['diagnostics']:
+            name = model.params['modelName']
+            min_loss = model.train_result['minLoss']
+            run_time = model.train_result['runTime']
             print(f"{name} training results: minLoss: {min_loss:.3f}, runTime: {run_time:.3f}")
+            
+    def failure(error):
+        if kwargs['model_params']['diagnostics']:
+            print(f"Releasing semaphore for failed model {kwargs['model_params']['modelName']}")
+        _train_test_subprocess.semaphore.release()
+        try:
+            model_name = kwargs['model_params']['modelName']
+            print(f"Error: {model_name} failed with {'; '.join([str(a) for a in error.args])}")
+        except:
+            print("Model failed: unknown error")
 
-    results = pool.apply_async(train_test_model, kwds=kwargs, callback=success)
-    sleep(2)    # Wait a little so sub-processes aren't submitted too quickly
+    if pool is None:
+        results = train_test_model(**kwargs)
+        success(results, False)
+    else:
+        if kwargs['model_params']['diagnostics']:
+            print(f"Acquiring semaphore for model {kwargs['model_params']['modelName']}")
+        _train_test_subprocess.semaphore.acquire()
+        if kwargs['model_params']['diagnostics']:
+            print(f"Submitting model {kwargs['model_params']['modelName']}")
+        results = pool.apply_async(train_test_model, kwds=kwargs,
+                                   callback=success, error_callback=failure)
+        sleep(1)    # Wait a little so sub-processes aren't submitted too quickly
     return results
 
 
 def _read_data(model_params, samples=None, X={}, inputs_needed=True):
-    def read_files(source, filename, multi_samples, inputs_needed=True):
+    def read_files(source, filename, source_names, inputs_needed=True):
         if isinstance(filename, list):    # Multiple file for this source
             sep = '\n    '
             print(f"Reading {source} files: {sep}{sep.join(filename)}")
             data = [pd.read_csv(fn, index_col=0) for fn in filename]
-            if multi_samples:             # Extend the number of samples
-                if len(filename) == len(multi_samples):
+            if source_names and len(source_names) > 1:   # Extend the number of samples
+                if len(filename) == len(source_names):
                     for df1 in data:
                         df1.columns = data[0].columns
-                    data = pd.concat(data, keys=multi_samples)
+                    data = pd.concat(data, keys=source_names, names=['Source'])
                 else:
                     raise Exception(f'Incorrect number of {source} files: '
-                                    f'{len(filename)} found; {len(multi_samples)} expected.')
-            else:                         # Extend the time-series
+                                    f'{len(filename)} found; {len(source_names)} expected.')
+            else:                                        # Extend the time-series
                 data = pd.concat(data, axis=1)
+                if source_names:
+                    data['Source'] = source_names[0]
+                    data = data.set_index('Source', append=True).swaplevel()
         elif filename:                    # Single file for this source
             print(f"Reading {source} file {filename}")
             data = pd.read_csv(filename, index_col=0)
-            if multi_samples:             # Replicate the file once for each key
-                data = pd.concat([data] * len(multi_samples), keys=multi_samples)
+            if source_names:              # Replicate the file once for each key
+                data = pd.concat([data] * len(source_names), keys=source_names, names=['Source'])
         elif inputs_needed:               # Input required but not provided
             raise Exception(f'No {source} file provided')
         else:                             # Input not provided and not required
             data = None
         return data
         
-    multi_samples = model_params.get('multiSamples', [])
+    source_names = model_params.get('sourceNames', [])
     if samples is None:           # No samples yet, so load from source file
         filename = model_params.get('samplesFile', None)
-        samples = read_files('samples', filename, multi_samples, inputs_needed)
-    if model_params['samplesFilter']:
-        filter_column = model_params['samplesFilter'][0]
-        filter_method = model_params['samplesFilter'][1]
-        filter_params = model_params['samplesFilter'][2:]
-        filter_str = ', '.join([str(x) for x in filter_params])
-        print(f"Samples filtered using \"{filter_column}.{filter_method}({filter_str})\"")
-        filter_ = getattr(samples[filter_column], filter_method)(*filter_params)
+        samples = read_files('samples', filename, source_names, inputs_needed)
+
+    if (isinstance(model_params['samplesFilter'], dict)
+        and model_params['samplesFilter'].get('apply', 'all').lower().startswith('all')):
+        filter_ = filter_index(samples, model_params['samplesFilter'],
+                               match_sources=model_params['testSources'],
+                               random_seed=model_params['randomSeed'])
         samples = samples[filter_]
 
     X = X or {}
@@ -106,7 +133,7 @@ def _read_data(model_params, samples=None, X={}, inputs_needed=True):
             temp_X[input_name] = X[input_name]
         else:                           # No data for this input yet, so load it from source files
             filename = model_params['inputs'][input_name].get('filename', None)
-            data = read_files(input_name, filename, multi_samples, inputs_needed)
+            data = read_files(input_name, filename, source_names, inputs_needed)
             if data is not None:        # No data for this input yet. It will be loaded later.
                 temp_X[input_name] = data
 
@@ -140,30 +167,67 @@ def _set_test_params(experiment, model_params, test_num):
         print(f'Test {test_num} - {test}\n')
     test_params = ModelParams(deepcopy(model_params))
     test_params['testName'] = test_name
+    test_params['test'] = test_num
     test_params['modelName'] = '_'.join([test_params['modelName'], f"test{test_num}"])
     test_params['modelDir'] = os.path.join(test_params['modelDir'], f"test{test_num}")
     inputs = test.pop('inputs', {})
+    blocks = test.pop('blocks', {})
     test_params.update(test)
     # Update model inputs
     for input_name, input_params in inputs.items():
-        test_params['inputs'][input_name].update(input_params)
+        if input_params is None:
+            test_params['inputs'].pop(input_name, None)
+        else:
+            test_params['inputs'][input_name].update(input_params)
     # Update model layers
-    for block in experiment['blocks'].keys() & test.keys():
-        layer_parms = deepcopy(experiment['blocks'][block])
-        layer_parms.update(test[block])
-        test_params.set_layers(
-            **{block.replace('Conv', '') + '_layers': layer_parms['numLayers']})
-        for key, values in layer_parms.items():
-            if key != 'numLayers':
-                is_list = isinstance(values, list)
-                for layer_num, layer in enumerate(test_params[block]):
-                    layer[key] = values[layer_num] if is_list else values
+    test_blocks = test_params['blocks']
+    for block_name, block_params in blocks.items():
+        if block_params is None:
+            test_params['blocks'].pop(input_name, None)
+        else:
+            block_type = 'Conv' if block_name.lower().endswith('conv') else 'Dense'
+            num_layers = len(block_params)
+            current_layers = len(test_blocks.setdefault(block_name, []))
+            if num_layers > current_layers:
+                # Add the missing layers
+                defaults = experiment.get('blocks', {}).get(block_name, {})
+                for _ in range(current_layers, num_layers):
+                    test_blocks[block_name].append(test_params.get_layer_params(block_type))
+                    test_blocks[block_name][-1].update(defaults)
+            elif num_layers < current_layers:
+                test_blocks[block_name] = test_blocks[block_name][:num_layers]
+                print(test_blocks[block_name])
+                print(test_params['blocks'][block_name])
+            for layer in range(num_layers):
+                test_blocks[block_name][layer].update(block_params[layer])
     # Can use either splitFolds or yearFolds with byYear method
     if (test_params['splitMethod'] == 'byYear') and (test_params['yearFolds'] is None):
         test_params['yearFolds'] = test_params['splitFolds']
+    if model_params['pretrainedModel']:
+        pretrained_dir = os.path.join(model_params['pretrainedModel'], f"test{test_num}")
+        if os.path.exists(pretrained_dir):
+            model_params['pretrainedModel'] = pretrained_dir
     # Get any sources that need re-loading
     reload = [src for src, f in inputs.items() if 'filename' in f.keys()]
+    if 'samplesFile' in test.keys():
+        reload.append('aux')
     return test_params, reload
+
+
+def _test_model_params(model_params, X):
+    from lfmc_model import import_model_class
+    model_params.check_keys()
+    model_params.save('model_params.json')
+    model = import_model_class(model_params['modelClass'])(model_params, inputs=X)
+    if model_params['plotModel']:
+        outdir = model_params['modelDir'].rstrip('/\\')
+        if os.path.basename(outdir).startswith('fold'):
+            outdir = os.path.dirname(outdir)
+        if os.path.basename(outdir).startswith('run'):
+            outdir = os.path.dirname(outdir)
+        model.plot(dir_name=outdir)
+    model.clear_model()
+    return model
 
 
 def run_kfold_model(pool, model_params, samples, X, y, parent_results):
@@ -197,7 +261,11 @@ def run_kfold_model(pool, model_params, samples, X, y, parent_results):
 
     model_name = model_params['modelName']
     model_dir = os.path.join(model_params['modelDir'], '')
-    model_params.save('model_params.json')
+    model_params['saveFiles'] = (model_params['saveTrain']
+                                 or (model_params['saveValidation'] and model_params['valSize'])
+                                 or model_params['saveModels'] is not False) #or True
+    if model_params['saveRunResults'] or model_params['saveFiles']:
+        model_params.save('model_params.json')
     models = ModelList(model_name, model_dir)
 
     folds = []
@@ -208,18 +276,10 @@ def run_kfold_model(pool, model_params, samples, X, y, parent_results):
         fold_params['modelName'] = f"{model_name}_{fold_name}"
         fold_params['modelDir'] = os.path.join(model_dir, fold_name)
         fold_params['fold'] = fold
-#        normalise_data(data, fold_params)
-#        print(f"Inputs: {fold_params['inputs']}, Target normalisation: {fold_params['targetNormalise']}")
         model = _train_test_subprocess(pool, model_params=fold_params, **data)
         models.append(model)
         model_params['plotModel'] = False
-
-    for num, model in enumerate(models):
-        models[num] = model.get()
-         
-    merge_kfold_results(
-        model_dir, models, folds=folds, epochs=model_params['evaluateEpochs'])
-        
+    models.folds = folds
     return models
 
 
@@ -237,13 +297,38 @@ def prepare_labels(model_params, samples):
         else:
             print('')
         if model_params.get('classify', False):
-            model_params['numClasses'] = y.nunique()
+            map_ = model_params.get('targetMap', None)
+            if isinstance(map_, str):
+                with open(map_, 'r') as f:
+                    map_d = json.load(f)
+                print(f"Target classes: {map_d}")
+                y = y.map(map_d)
+                model_params['numClasses'] = len(map_d)
+            elif isinstance(map_, dict):
+                y = y.map(map_)
+                model_params['numClasses'] = len(map_)
+                print(f"Target classes: {map_}")
+            else:
+                try:
+                    y = y.astype(int)
+                except:
+                    y = pd.Series(y.factorize()[0], index=y.index)
+                model_params['numClasses'] = y.nunique()
+        if model_params.get('targetThresholds', False):
+            z = set_thresholds(samples, model_params['targetThresholds'])
+            y = pd.concat([y, z], axis=1)
+            model_params['multiTarget'] = False
+        if model_params.get('domainLabels', False):
+            d = ordinal_encoder(y.index.to_frame()[['Source']])
+            y = y.to_frame()
+            y['Source'] = d
+            model_params['multiTarget'] = True
     else:       # Labels not provided
         raise Exception('No target data provided')
-    return y
+    return y #np.array(y)
 
     
-def prepare_data(model_params, samples=None, X={}, predict=False):
+def prepare_data(model_params, samples=None, X={}, parent_model=None, predict=False):
     """Prepares data for LFMC model training or prediction.
     
     Prepares the data for an LFMC model test.  
@@ -297,14 +382,27 @@ def prepare_data(model_params, samples=None, X={}, predict=False):
         if onehot_cols:
             print('One-hot encoded columns:', model_params['auxOneHotCols'])
         if onehot_cols:
+            model_dir = model_params['modelDir']
+            source_dir = None
             if predict:
                 fit_data = None
+            elif model_params['pretrainedModel']:
+                source_dir = model_params['pretrainedModel']
+                fit_data = None
+            elif model_params['onehotEncoder']:
+                if isinstance(model_params['onehotEncoder'], dict):
+                    fit_data = model_params['onehotEncoder']
+                else:
+                    source_dir = model_params['onehotEncoder']
+                    fit_data = None
             else:
                 fit_data = samples[onehot_cols]
+            save = model_params.get('saveModels', None) is not False
             onehot_enc = create_onehot_enc(onehot_cols,
                                            fit_data,
-                                           model_dir=model_params['modelDir'],
-                                           save=model_params.get('saveModels', False))
+                                           model_dir=model_dir,
+                                           source_dir=source_dir,
+                                           save=save)
             onehot_data = onehot_enc.transform(samples[onehot_cols].fillna('').to_numpy())
             x_aux = np.concatenate([x_aux, onehot_data], axis=1)
         return x_aux
@@ -326,19 +424,11 @@ def prepare_data(model_params, samples=None, X={}, predict=False):
             for x in range(0, input_data.shape[1], 24):
                 print(input_data[0, x:x+24, 0])
         return input_data
-        # normal = input_params['normalise']
-        # return normalise(input_data, **normal,
-        #                  input_name=input_name,
-        #                  model_dir=model_params['modelDir'],
-        #                  save_params=model_params['saveModels'],
-        #                  load_params=predict)
 
     if 'aux' in model_params['dataSources']:
-        augment = model_params['auxAugment']
         temp_aux = prepare_aux_data(model_params, samples, predict)
     else:
         temp_aux = None   # No auxiliary data
-        augment = False   # Ignore the auxAugment setting if auxiliaries are not used
 
     # Adjust input time series lengths and normalise data
     X = X or {}
@@ -354,13 +444,6 @@ def prepare_data(model_params, samples=None, X={}, predict=False):
             if channels > 0:
                 temp_X[input_name] = prepare_ts_data(
                     model_params, input_params, input_data, predict)
-                # if (augment is True) or (isinstance(augment, list) and input_name in augment):
-                #     temp_aux = np.concatenate(
-                #         [temp_aux, temp_X[input_name][:, -1, :]], axis=1)
-                # elif isinstance(augment, dict) and input_name in augment.keys():
-                #     offset = augment[input_name] or 1
-                #     temp_aux = np.concatenate(
-                #         [temp_aux, temp_X[input_name][:, -offset, :]], axis=1)
             else:
                 input_data = np.array(input_data)
                 temp_X[input_name] = input_data
@@ -370,7 +453,7 @@ def prepare_data(model_params, samples=None, X={}, predict=False):
         temp_X['aux'] = temp_aux
         print(f'Prepared aux shape: {temp_X["aux"].shape}')
         
-    if model_params['parentModel'] and model_params['parentResult']:
+    if parent_model:
         temp_X['parent'] = np.zeros((samples.shape[0], 1))
         
     return temp_X
@@ -429,25 +512,31 @@ def create_models(model_params, samples=None, X={}, y=None, parent_model=None):
 
     def create_worker_pool(model_params):
         num_pool_workers = model_params.get('maxWorkers', 1)
-        gpu_list = model_params.get('gpuList', [])
-        if gpu_list:
-            gpu_queue = Manager().Queue()
-            for gpu in (gpu_list * num_pool_workers)[:num_pool_workers]:
-                gpu_queue.put(gpu)
-            init = pool_initialiser
+        if num_pool_workers > 0:
+            gpu_list = model_params.get('gpuList', [])
+            if gpu_list:
+                gpu_queue = Manager().Queue()
+                for gpu in (gpu_list * num_pool_workers)[:num_pool_workers]:
+                    gpu_queue.put(gpu)
+                init = pool_initialiser
+            else:
+                init = None
+                gpu_queue = None
+            context = get_context('spawn').Pool(num_pool_workers, init, (gpu_queue,))
+            _train_test_subprocess.semaphore = BoundedSemaphore(num_pool_workers)
+            return contextlib.closing(context)
         else:
-            init = None
-            gpu_queue = None
-        return get_context('spawn').Pool(num_pool_workers, init, (gpu_queue,))
+            return contextlib.nullcontext(enter_result=None)
 
     def setup_runs(model_params):
         restart = model_params.get('restartRun', 0)
-        if restart:
+        if restart and os.path.exists(model_dir):
             models = ModelList.load_model_set(model_dir, num_runs=restart)
             file_name = f'model_params{restart}.json'
             if len(models) < restart:
                 warnings.warn(f'Restart at run {restart} requested, but only {len(models)} ' \
-                              'runs found. Missing runs ignored.')
+                              f'runs found. Adjusting restart to run {len(models)}.')
+                restart = len(models)
             else:
                 print(f'Restarting at run {restart}')
         else:
@@ -455,33 +544,28 @@ def create_models(model_params, samples=None, X={}, y=None, parent_model=None):
             models = ModelList(model_params['modelName'], model_dir)
             file_name = 'model_params.json'
         model_params.save(file_name)
+        models.params = model_params
         return models, restart
 
-    def merge_run_results(models, model_params):
+    def merge_run_results(models, model_params, save_epochs):
         model_dir = model_params['modelDir']
         gen_test_results(model_dir, models)
         can_ensemble = ((not model_params['resplit']
                          or model_params['splitMethod'] == 'byYear')
                        and (model_params['testFolds'] < 2))
+        num_classes = model_params.get('numClasses', 0)
+        classify = model_params['classify'] if num_classes <= 2 else num_classes
         if can_ensemble:
-            create_ensembles(model_dir, models)
-        if model_params['evaluateEpochs']:
-            for epoch in models[0].epoch_results.keys():
-                print(f"\nResults summary: {epoch}\n{'-' * (17 + len(epoch))}")
+            create_ensembles(model_dir, models, classify=classify)
+        if save_epochs: 
+            models.epoch_test_predicts = {}
+            models.epoch_test_stats = {}
+            for epoch in models[0].epoch_test_predicts.keys():
+                print(f"Processing epoch {epoch}")
                 gen_test_results(model_dir, models, epoch=epoch)
                 if can_ensemble:
-                    create_ensembles(model_dir, models, epoch=epoch)
+                    create_ensembles(model_dir, models, epoch=epoch, classify=classify)
     
-    def samples_filter(parent_filter, samples, parent_results):
-        filter_method = parent_filter[0]
-        filter_params = parent_filter[1:]
-        filter_str = ', '.join([str(x) for x in filter_params])
-        print(f"Samples filtered on parent results using \"{filter_method}({filter_str})\"")
-        filter_values = parent_results.drop(columns='y').mean(axis=1)
-        filter_ = getattr(filter_values, filter_method)(*filter_params)
-        return samples[filter_.reindex(samples.index)]
-        
-        
     # Add attributes to kfold_split to store the fold indexes between runs
     kfold_split.indexes = None
     kfold_split.folds = None
@@ -494,46 +578,66 @@ def create_models(model_params, samples=None, X={}, y=None, parent_model=None):
     if y is None:
         y = prepare_labels(model_params, samples)
     X = prepare_data(model_params, samples, X)
-    if model_params['splitMethod'] == 'byYear':
-        has_folds = model_params.get('yearFolds', None)
-        has_folds = (has_folds if isinstance(has_folds, int) else model_params['splitFolds']) > 1
+    if model_params['splitYear']:
+        has_folds = model_params.get('yearFolds', 0) or 0
+        has_folds = (has_folds > 1) or (model_params['splitFolds'] > 1)
     else:
-        has_folds = model_params['splitMethod'] and (model_params['splitFolds'] > 1)
+        has_folds = ((model_params['splitMethod'] in ['Random', 'byValue', 'bySource'])
+                     and (model_params['splitFolds'] > 1))
+    has_folds = has_folds or model_params.get('loadFolds')
+    save_epochs = model_params['evaluateEpochs'] or isinstance(model_params['epochs'], dict)
 
-    with contextlib.closing(create_worker_pool(model_params)) as pool:
+    with create_worker_pool(model_params) as pool:
         # Build and run several models
         if model_params['modelRuns'] >= 1:
             models, restart = setup_runs(model_params)
             data = None
             for run in range(restart, model_params['modelRuns']):
-                parent_results = None if parent_model is None else parent_model[run].all_results
+                parent_results = None if parent_model is None else parent_model[run].test_predicts
                 run_params = _set_run_params(model_params, run)
-                if not has_folds: # model_params['splitFolds'] <= 1:
+                if has_folds:
+                    models.append(run_kfold_model(pool, run_params, samples, X, y, parent_results))
+                    while restart <= run and (not model_params['asyncRuns']
+                                              or models[restart][-1].ready()):
+                        run_models = models[restart]
+                        print(f"Processing result for run {restart} after submitting run {run}.")
+                        merge_kfold_results(run_models.model_dir, run_models, epochs=save_epochs)
+                        restart += 1
+                else:
                     if data is None or model_params['resplit']:
                         data = train_test_split(run_params, samples, X, y, parent_results)
-                    model = _train_test_subprocess(pool, model_params=run_params, **data)
-                else:
-                    model = run_kfold_model(pool, run_params, samples, X, y, parent_results)
-                models.append(model)
+                    models.append(_train_test_subprocess(pool, model_params=run_params, **data))
                 model_params['plotModel'] = False  # Disable model plotting after the first run
-                    
-            if not has_folds:  # model_params['splitFolds'] <= 1:
+
+            if has_folds:
+                for num, run_models in enumerate(models[restart:], restart):
+                    print(f"Processing result for run {num} after submitting all runs.")
+                    merge_kfold_results(run_models.model_dir, run_models, epochs=save_epochs)
+            else:
                 for num, model in enumerate(models[restart:], restart):
                     m = model.get()
                     models[num] = m
-            else:
-                merge_run_results(models, model_params)
+            if isinstance(getattr(models[0], 'test_stats', None), pd.DataFrame):
+                merge_run_results(models, model_params, save_epochs)
     
         # Build and run a single model
         elif model_params['modelRuns'] == 0:
-            parent_results = None if parent_model is None else parent_model.all_results
-            if not has_folds: # model_params['splitFolds'] <= 1:
+            parent_results = None if parent_model is None else parent_model.test_predicts
+            if not has_folds:
                 data = train_test_split(model_params, samples, X, y, parent_results)
                 models = _train_test_subprocess(pool, model_params=model_params, **data).get()
         
             # Build and run a k-fold model
-            else:    # model_params['splitFolds'] > 1:
+            else:
                 models = run_kfold_model(pool, model_params, samples, X, y, parent_results)
+                merge_kfold_results(model_dir, models, epochs=save_epochs)
+
+        # Parameter test - no models built
+        else:
+            models = _test_model_params(model_params, X)
+            if model_params['saveFolds']:
+                parent_results = None if parent_model is None else parent_model.test_predicts
+                [x for x in kfold_split(model_params, samples, X, y, parent_results)]
     
     return models
     
@@ -626,15 +730,18 @@ def run_experiment(experiment, model_params, samples=None, X={}, y=None):
     for test_num in test_range:
         print(f"\n{'-' * 70}\n")
         test_params, reload = _set_test_params(experiment, model_params, test_num)
-        parent = test_params.get('parentModel')
-        if isinstance(parent, int):
-            parent_model = models[parent]
+        pretrained = test_params.get('pretrainedModel')
+        if isinstance(pretrained, int):
+            test_params['pretrainedModel'] = models[pretrained].model_dir
+        parent = test_params['inputs'].get('parent', None)
+        if isinstance(parent, dict):
+            parent_model = models[parent.get('model')]
         else:
             parent_model = None
         if (reload == []) or ((samples is None) and (not X) and (y is None)):
             model = create_models(test_params, samples, X, y, parent_model)
         else:
-            test_X = {k: v for k, v in X if k not in reload}
+            test_X = {k: v for k, v in X.items() if k not in reload}
             test_samples = None if 'aux' in reload else samples
             model = create_models(test_params, test_samples, test_X, y, parent_model)
         if test_num < len(models):
