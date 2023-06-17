@@ -12,7 +12,11 @@ Reference: Miller, L., Zhu, L., Yebra, M., Rüdiger, C., & Webb, G. I. (2022). M
 
 ### LFMC_projections
 Paper: Projecting live fuel moisture content via deep learning
-Reference: Miller, L., Zhu, L., Yebra, M., Rüdiger, C., & Webb, G. I. (2022).Projecting live fuel moisture content via deep learning. (Submitted for publication).
+Reference: Miller, L., Zhu, L., Yebra, M., Rüdiger, C., & Webb, G. I. (2023). Projecting live fuel moisture content via deep learning. International Journal of Wildland Fire, 32(5), 709–727. https://doi.org/10.1071/WF22188
+
+### Domain_adaptation
+Paper: Inter-Continental Domain Adaptation for Temporal CNNs
+Reference: Miller, L., Rüdiger, C., & Webb, G. I. (2023). Inter-Continental Domain Adaptation for Temporal CNNs. (Paper in progress).
 
 ## Main Directories
 The python code in the top-level directory contains the modules, classes, and functions used to extract data, build models and analyse results.
@@ -20,7 +24,7 @@ The python code in the top-level directory contains the modules, classes, and fu
 A directory is provided that contains the notebooks and scripts used to generate and analyse the specific models used for each paper. In the "main" branch, these are updated to run with the latest version of the code. Each directory contains the customised `common.py` and `architecture_???.py` files, and has 4 sub-directories `extract_data`, `build_models`, `analyse_results` and `create_maps` that contain the scripts and notebooks for each task.
 
 ## Requirements
-1. Python 3.8 with packages listed in [requirements.txt](../requirements.txt). The code was written and tested using Anaconda on Windows. Limited testing has also been done on Linux, but there were minor differences in the versions of some packages (see [requirements-linux.txt](../requirements-linux.txt) for package versions used). [InstallNotes.md](../InstallNotes.md) contains some notes about how to set up a suitable Anaconda virtual environment.
+1. Python 3.8 with packages listed in [requirements.txt](../requirements.txt). The code was written and tested using Anaconda on Windows. It has also been tested on Linux, but there were minor differences in the versions of some packages (see [requirements-linux.txt](../requirements-linux.txt) for package versions used). [InstallNotes.md](../InstallNotes.md) contains some notes about how to set up a suitable Anaconda virtual environment.
 2. An authenticated Google Earth Engine account
 3. A copy of the [`Globe-LFMC.xlsx` dataset](#Globe-LFMC)
 4. A copy of the [Köppen-Geiger Climate Zone Data](#Koppen-Geiger)
@@ -40,6 +44,7 @@ Yebra, M., Scortechini, G., Badi, A., Beget, M.E., Boer, M.M., Bradstock, R., Ch
 4. MODIS MOD10A1 Version 6 dataset: Hall, D.K., Riggs, G.A., 2016. MODIS/Terra Snow Cover Daily L3 Global 500m SIN Grid, Version 6. https://doi.org/10.5067/MODIS/MOD10A1.006
 5. MODIS MOD44W Version 6 water mask: Carroll, M., DiMiceli, C., Wooten, M., Hubbard, A., Sohlberg, R., Townshend, J., 2017. MOD44W MODIS/Terra Land Water Mask Derived from MODIS and SRTM L3 Global 250m SIN Grid V006. NASA EOSDIS Land Processes DAAC. https://lpdaac.usgs.gov/products/mod44wv006
 6. PRISM AN81d Gridded daily climate dataset: PRISM Climate Group, 2004. PRISM Climate Group [WWW Document]. Oregon State Univ. URL http://prism.oregonstate.edu
+7. ERA5 dataset: Copernicus Climate Change Service (C3S), 2017. ERA5: Fifth generation of ECMWF atmospheric reanalyses of the global climate [WWW Document]. Copernicus Clim. Chang. Serv. Clim. Data Store. URL https://cds.climate.copernicus.eu/cdsapp#!/home
 
 ### Köppen-Geiger Climate Zone Data
 Beck, H.E., Zimmermann, N.E., McVicar, T.R., Vergopolan, N., Berg, A., Wood, E.F., 2018. Present and future Köppen-Geiger climate classification maps at 1-km resolution. Sci. Data 5, 180214. https://doi.org/10.1038/sdata.2018.214
