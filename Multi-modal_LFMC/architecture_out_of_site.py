@@ -10,11 +10,11 @@ from model_parameters import ModelParams
 # =================================================
 # Model parameters for the out-of-site architecture
 # =================================================
-model_params = ModelParams(modis_layers=3, prism_layers=3, fc_layers=1)
+model_params = ModelParams(opticalConv_layers=3, weatherConv_layers=3, fc_layers=1)
 
 model_params['modelClass'] = 'LfmcTempCnn'
 model_params['modelRuns'] = common.ENSEMBLE_SIZE
-model_params['dataSources'] = ['modis', 'prism', 'aux'] 
+model_params['dataSources'] = ['optical', 'weather', 'aux'] 
 
 # Target column
 model_params['targetColumn'] = 'LFMC value'
@@ -47,37 +47,18 @@ model_params['loss'] = 'mean_squared_error'
 model_params['metrics'] = ['mean_absolute_error']
 
 # Block / layer parameters
-model_params['fc'][0]['units'] = 128
-model_params['fc'][0]['bnorm'] = True
+model_params['blocks']['fc'][0].update({'units': 128, 'bnorm': True})
 
-model_params['modisConv'][0]['poolSize'] = 2
-model_params['modisConv'][1]['poolSize'] = 3
-model_params['modisConv'][2]['poolSize'] = 4
+model_params['blocks']['opticalConv'][0].update(
+    {'poolSize': 2, 'filters': 8, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['opticalConv'][1].update(
+    {'poolSize': 3, 'filters': 8, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['opticalConv'][2].update(
+    {'poolSize': 4, 'filters': 8, 'kernel': 5, 'bnorm': True})
 
-model_params['modisConv'][0]['filters'] = 8
-model_params['modisConv'][1]['filters'] = 8
-model_params['modisConv'][2]['filters'] = 8
-
-model_params['modisConv'][0]['kernel'] = 5
-model_params['modisConv'][1]['kernel'] = 5
-model_params['modisConv'][2]['kernel'] = 5
-
-model_params['modisConv'][0]['bnorm'] = True
-model_params['modisConv'][1]['bnorm'] = True
-model_params['modisConv'][2]['bnorm'] = True
-
-model_params['prismConv'][0]['poolSize'] = 2
-model_params['prismConv'][1]['poolSize'] = 3
-model_params['prismConv'][2]['poolSize'] = 4
-
-model_params['prismConv'][0]['filters'] = 8
-model_params['prismConv'][1]['filters'] = 8
-model_params['prismConv'][2]['filters'] = 8
-
-model_params['prismConv'][0]['kernel'] = 5
-model_params['prismConv'][1]['kernel'] = 5
-model_params['prismConv'][2]['kernel'] = 5
-
-model_params['prismConv'][0]['bnorm'] = True
-model_params['prismConv'][1]['bnorm'] = True
-model_params['prismConv'][2]['bnorm'] = True
+model_params['blocks']['weatherConv'][0].update(
+    {'poolSize': 2, 'filters': 8, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['weatherConv'][1].update(
+    {'poolSize': 3, 'filters': 8, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['weatherConv'][2].update(
+    {'poolSize': 4, 'filters': 8, 'kernel': 5, 'bnorm': True})

@@ -179,36 +179,41 @@ def _set_test_params(experiment, model_params, test_num):
             test_params['inputs'].pop(input_name, None)
         else:
             test_params['inputs'][input_name].update(input_params)
-    # Update model layers
+    # Update model blocks and layers
     test_blocks = test_params['blocks']
     for block_name, block_params in blocks.items():
         if block_params is None:
+            # Block is not used in this test - remove it
             test_params['blocks'].pop(input_name, None)
         else:
+            # Block is used - update paramters
             block_type = 'Conv' if block_name.lower().endswith('conv') else 'Dense'
             num_layers = len(block_params)
             current_layers = len(test_blocks.setdefault(block_name, []))
             if num_layers > current_layers:
-                # Add the missing layers
+                # Add any missing layers to the block using default values
                 defaults = experiment.get('blocks', {}).get(block_name, {})
                 for _ in range(current_layers, num_layers):
                     test_blocks[block_name].append(test_params.get_layer_params(block_type))
                     test_blocks[block_name][-1].update(defaults)
             elif num_layers < current_layers:
+                # Remove extra layers from block
                 test_blocks[block_name] = test_blocks[block_name][:num_layers]
                 print(test_blocks[block_name])
                 print(test_params['blocks'][block_name])
+            # Update block parameters with any values specified for this test
             for layer in range(num_layers):
                 test_blocks[block_name][layer].update(block_params[layer])
     # Can use either splitFolds or yearFolds with byYear method
     if (test_params['splitMethod'] == 'byYear') and (test_params['yearFolds'] is None):
         test_params['yearFolds'] = test_params['splitFolds']
+    # Update the pretrained model location to include the test_num
     if model_params['pretrainedModel']:
         pretrained_dir = os.path.join(model_params['pretrainedModel'], f"test{test_num}")
         if os.path.exists(pretrained_dir):
             model_params['pretrainedModel'] = pretrained_dir
     # Get any sources that need re-loading
-    reload = [src for src, f in inputs.items() if 'filename' in f.keys()]
+    reload = [src for src, f in inputs.items() if (f is not None and 'filename' in f.keys())]
     if 'samplesFile' in test.keys():
         reload.append('aux')
     return test_params, reload

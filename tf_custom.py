@@ -48,6 +48,7 @@ def sourcerer(source_model, target_size, source_size, target_max=1e6):
 
     transfer_params = source_model.params['transferModel']
     freeze_bn = transfer_params.get('freeze_bn', True)
+    target_max = transfer_params.get('targetMax', target_max)
     transfer_limit = transfer_params.get('limit', None)
     scale_variance = transfer_params.get('scale', False)
     loss_fn = tf.keras.losses.get(source_model.params['loss'])
@@ -69,6 +70,7 @@ def sourcerer(source_model, target_size, source_size, target_max=1e6):
                                    math.log(target_max)))
         if diagnostics:
             print("Lambda value for regularization: ", lambda_)
+        print(f"Target_max: {target_max}; Lambda: {lambda_}")
         source_weights = deepcopy(source_model.model.trainable_weights)
         source_model.losses = source_reg_loss
     elif diagnostics:

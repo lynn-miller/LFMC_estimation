@@ -13,7 +13,7 @@ LFMC_DATA_DIR = r'G:\My Drive\LFMC Data'
 TEMP_DIR = r'C:\Temp\LFMC'
 
 # Directory for all data related to a set of models/experiments
-DATA_DIR = os.path.join(LFMC_DATA_DIR, 'Transfer_learning')
+DATA_DIR = os.path.join(LFMC_DATA_DIR, 'Domain_adaptation')
 
 # Directory for GEE data used for generating LFMC maps
 GEE_MAPS_DIR = os.path.join(LFMC_DATA_DIR, 'Maps data')

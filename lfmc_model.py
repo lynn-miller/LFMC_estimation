@@ -450,7 +450,7 @@ class LfmcModel():
         else:
             units = 1
             act = 'linear'
-        x = keras.layers.Dense(units, name=block_name,
+        x = keras.layers.Dense(units, name=block_name, dtype='float32',
                                kernel_initializer=self.params['initialiser'],
                                activation=act)(x)
         return x

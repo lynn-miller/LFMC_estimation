@@ -12,16 +12,17 @@ conda activate LFMC
 
 ## Install Conda and Python packages
 ```
-conda install pandas ipykernel jupyter matplotlib xlrd openpyxl scikit-learn scipy pydot seaborn
+conda install pandas ipykernel jupyter matplotlib xlrd openpyxl scikit-learn scipy seaborn
 conda install -c conda-forge multiprocess
 conda install -c conda-forge gdal
+conda install -c conda-forge graphviz=2.38 pydot python-graphviz
 conda install -c anaconda cudatoolkit=10.1
 conda install -c anaconda cudnn=7.6.5=cuda10.1_0
 ```
 
 ### On Windows, install Tensorflow using pip
 ```
-pip install tensorflow==2.3
+pip install tensorflow==2.9
 ```
 
 ### On Unix, install Tensorflow-GPU using conda
@@ -30,6 +31,8 @@ conda install tensorflow-gpu
 ```
 
 ### Notes
+- On windows, tensorflow needs to be version 2.8 or 2.9. Tensorflow 2.8 is the first version to support XLA and Tensorflow 2.9 is the last to have GPU compatibility with Windows (The Tensorflow forums state that Tensorflow 2.10 has GPU compatibility with Windows but this version didn't recognise the GPU on my PC).
+- If you get the message 'You must install pydot (`pip install pydot`) and install graphviz (see instructions at https://graphviz.gitlab.io/download/) for plot_model/model_to_dot to work.' when building models in Jupyter, but you have installed all of graphviz, python-graphviz and pydot, try installing pydot-ng (`pip install pydot-ng`).
 - Gdal needs to be installed from conda-forge to get bigtiff support
 - There appear to be incompatibilities between gdal and tensorflow. Installing gdal before tensorflow seems to resolve most issues - but if using both in one Python script, you need to import tensorflow before gdal. This needs to be done even if the gdal and/or tensorflow import is done in an imported module.
 
@@ -63,7 +66,7 @@ earthengine authenticate
 - To create a shortcut for JupyterLab, copy and rename the Jupyter shortcut, and change "jupyter-notebook-script.py" to "jupyter-lab-script.py" in the Target
 
 ## Links
-The instructions here are fairly complete and easy to follow:
+If you have problems setting up tensorflow on Windows to recognize the GPU, the instructions here are fairly complete and easy to follow:
 https://towardsdatascience.com/setting-up-tensorflow-gpu-with-cuda-and-anaconda-onwindows-2ee9c39b5c44
 
 This article has some more info and some code to test the install:

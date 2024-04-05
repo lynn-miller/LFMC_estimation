@@ -9,12 +9,12 @@ from model_parameters import ModelParams
 # ===================================================
 # Model parameters for the Modis-tempCNN architecture
 # ===================================================
-model_params = ModelParams(modis_layers=3, fc_layers=2)
+model_params = ModelParams(optical_layers=3, fc_layers=2)
 
 model_params['modelClass'] = 'LfmcTempCnn'
 # Modis-tempCNN isn't an ensemble so only 1 run is needed
 model_params['modelRuns'] = 1
-model_params['dataSources'] = ['modis', 'aux']
+model_params['dataSources'] = ['optical', 'aux']
 # Modis-tempCNN uses the model formed by merging the last 10 checkpoints
 model_params['derivedModels'] = {'merge10': {'type': 'merge', 'models': 10}}
 
@@ -49,22 +49,12 @@ model_params['loss'] = 'mean_squared_error'
 model_params['metrics'] = ['mean_absolute_error']
 
 # Block / layer parameters
-    
-model_params['fc'][0]['units'] = 256
-model_params['fc'][1]['units'] = 256
+model_params['blocks']['fc'][0].update({'units': 256, 'bnorm': True})
+model_params['blocks']['fc'][1].update({'units': 256, 'bnorm': True})
 
-model_params['modisConv'][0]['filters'] = 32
-model_params['modisConv'][1]['filters'] = 32
-model_params['modisConv'][2]['filters'] = 32
-
-model_params['modisConv'][0]['poolSize'] = 2
-model_params['modisConv'][1]['poolSize'] = 3
-model_params['modisConv'][2]['poolSize'] = 4
-
-model_params['modisConv'][0]['kernel'] = 5
-model_params['modisConv'][1]['kernel'] = 5
-model_params['modisConv'][2]['kernel'] = 5
-
-model_params['modisConv'][0]['bnorm'] = True
-model_params['modisConv'][1]['bnorm'] = True
-model_params['modisConv'][2]['bnorm'] = True
+model_params['blocks']['opticalConv'][0].update(
+    {'poolSize': 2, 'filters': 32, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['opticalConv'][1].update(
+    {'poolSize': 3, 'filters': 32, 'kernel': 5, 'bnorm': True})
+model_params['blocks']['opticalConv'][2].update(
+    {'poolSize': 4, 'filters': 32, 'kernel': 5, 'bnorm': True})
